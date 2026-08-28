@@ -48,20 +48,24 @@ const DIM_LABEL = {process:"Process", quality:"Quality", growth:"Growth"};
 /* ---------------------------------------------------------- */
 let STAGES = [];              // [{id,name,order}] — Sales
 let ONB_STAGES = [];          // [{id,name,order}] — Onboarding
+let ACC_STAGES = [];          // [{id,name,order}] — Clients (ongoing account management)
 let STATE = {
   session:null, profile:null,     // {id, fullName, role}
   profiles:{},                    // id -> {fullName, role, email}
   requirements:{},                // stageId -> [{id,label,dims,required,dept,thresholdDays,sortOrder}] (shared across workflows — stage ids are unique)
   opportunities:[],
   clients:[],
+  accounts:[],
   ui:{ view:"command", qDim:"all", search:"" }
 };
-function stagesArrFor(stageId){ return STAGES.some(s=>s.id===stageId) ? STAGES : ONB_STAGES; }
+const ALL_STAGE_ARRS = () => [STAGES, ONB_STAGES, ACC_STAGES];
+function stagesArrFor(stageId){ return ALL_STAGE_ARRS().find(arr=>arr.some(s=>s.id===stageId)) || STAGES; }
 function nextStageId(id){ const arr = stagesArrFor(id); const order = arr.map(s=>s.id); const i = order.indexOf(id); return i>=0 && i<order.length-1 ? order[i+1] : null; }
-function stageName(id){ const s = STAGES.find(x=>x.id===id) || ONB_STAGES.find(x=>x.id===id); return s ? s.name : id; }
+function stageName(id){ for(const arr of ALL_STAGE_ARRS()){ const s = arr.find(x=>x.id===id); if(s) return s.name; } return id; }
 function getOpp(id){ return STATE.opportunities.find(o=>o.id===id); }
 function getClient(id){ return STATE.clients.find(c=>c.id===id); }
-function getRecord(id, type){ return type==="client" ? getClient(id) : getOpp(id); }
+function getAccount(id){ return STATE.accounts.find(a=>a.id===id); }
+function getRecord(id, type){ return type==="account" ? getAccount(id) : type==="client" ? getClient(id) : getOpp(id); }
 function reqConfig(stageId, reqId){ return (STATE.requirements[stageId]||[]).find(r=>r.id===reqId); }
 function stageReqs(stageId){ return STATE.requirements[stageId]||[]; }
 function daysInStage(o){ return Math.floor((nowTs()-o.stageEnteredAt)/DAY); }
@@ -79,6 +83,7 @@ async function loadEngineConfig(){
   if(se || re){ console.error(se||re); toast("Couldn't load workflow config.", "orange"); return; }
   STAGES = (stages||[]).filter(s=>s.workflow_id==="sales").map(s=>({id:s.id, name:s.name, order:s.sort_order}));
   ONB_STAGES = (stages||[]).filter(s=>s.workflow_id==="onboarding").map(s=>({id:s.id, name:s.name, order:s.sort_order}));
+  ACC_STAGES = (stages||[]).filter(s=>s.workflow_id==="accounts").map(s=>({id:s.id, name:s.name, order:s.sort_order}));
   const grouped = {};
   (reqs||[]).forEach(r=>{
     (grouped[r.stage_id] = grouped[r.stage_id]||[]).push({
@@ -153,11 +158,40 @@ async function loadClients(){
   });
 }
 
+async function loadAccounts(){
+  const {data, error} = await sb.from("accounts")
+    .select("*, account_requirement_status(*), activity_log(*)")
+    .order("created_at", {ascending:false});
+  if(error){ console.error(error); toast("Couldn't load client accounts.", "orange"); return; }
+  STATE.accounts = (data||[]).map(a=>{
+    const reqStatus = {};
+    (a.account_requirement_status||[]).forEach(rs=>{
+      reqStatus[rs.requirement_id] = {
+        status: rs.status,
+        evidence: rs.evidence,
+        verifiedBy: rs.verified_by ? (STATE.profiles[rs.verified_by]||{}).fullName || "a teammate" : null,
+        verifiedAt: rs.verified_at ? new Date(rs.verified_at).getTime() : null,
+        blockedReason: rs.blocked_reason,
+        updatedAt: new Date(rs.updated_at).getTime()
+      };
+    });
+    const activity = (a.activity_log||[])
+      .map(x=>({ts:new Date(x.created_at).getTime(), actor:x.actor_name, action:x.action, detail:x.detail||""}))
+      .sort((x,y)=>y.ts-x.ts);
+    return {
+      id:a.id, business:a.business, contact:a.contact, value:Number(a.value),
+      stageId:a.stage_id, stageEnteredAt:new Date(a.stage_entered_at).getTime(), createdAt:new Date(a.created_at).getTime(),
+      status:a.status, cycleNumber:a.cycle_number, sourceClientId:a.source_client_id, reqStatus, activity
+    };
+  });
+}
+
 async function refreshAll(){
   await loadProfiles();
   await loadEngineConfig();
   await loadOpportunities();
   await loadClients();
+  await loadAccounts();
 }
 
 /* ---------------------------------------------------------- */
@@ -185,6 +219,11 @@ async function ensureNewRequirementRows(stageId, requirementId){
   if(clis && clis.length){
     const rows = clis.map(c=>({client_id:c.id, requirement_id:requirementId, status:"pending"}));
     await sb.from("client_requirement_status").upsert(rows, {onConflict:"client_id,requirement_id", ignoreDuplicates:true});
+  }
+  const {data: accs} = await sb.from("accounts").select("id").eq("stage_id", stageId).eq("status","active");
+  if(accs && accs.length){
+    const rows = accs.map(a=>({account_id:a.id, requirement_id:requirementId, status:"pending"}));
+    await sb.from("account_requirement_status").upsert(rows, {onConflict:"account_id,requirement_id", ignoreDuplicates:true});
   }
 }
 
@@ -400,6 +439,93 @@ async function markClientLive(clientId){
   await refreshAndRerender();
 }
 
+/* ---------------- Clients / accounts mutations (ongoing, cyclical) ---------------- */
+async function logAccountActivity(accountId, action, detail){
+  await sb.from("activity_log").insert({
+    account_id: accountId, actor_id: STATE.session.user.id, actor_name: actorName(),
+    action, detail: detail || null
+  });
+}
+async function ensureAccountReqRows(stageId, accountId){
+  const reqs = stageReqs(stageId);
+  if(!reqs.length) return;
+  const rows = reqs.map(r=>({account_id:accountId, requirement_id:r.id, status:"pending"}));
+  await sb.from("account_requirement_status").upsert(rows, {onConflict:"account_id,requirement_id", ignoreDuplicates:true});
+}
+async function submitAccountEvidence(accountId, reqId, text){
+  const cfg = reqConfig(getAccount(accountId).stageId, reqId);
+  const {error} = await sb.from("account_requirement_status")
+    .update({status:"submitted", evidence:text, updated_at:new Date().toISOString()})
+    .eq("account_id", accountId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't save that.", "orange"); return; }
+  await logAccountActivity(accountId, "Submitted evidence: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
+  toast("Evidence submitted — awaiting verification.");
+  await refreshAndRerender();
+}
+async function verifyAccountReq(accountId, reqId){
+  const cfg = reqConfig(getAccount(accountId).stageId, reqId);
+  const {error} = await sb.from("account_requirement_status")
+    .update({status:"verified", verified_by:STATE.session.user.id, verified_at:new Date().toISOString(), updated_at:new Date().toISOString()})
+    .eq("account_id", accountId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't verify that.", "orange"); return; }
+  await logAccountActivity(accountId, "Verified: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
+  toast("Verified.");
+  await refreshAndRerender();
+}
+async function flagAccountReq(accountId, reqId, reason){
+  const cfg = reqConfig(getAccount(accountId).stageId, reqId);
+  const {error} = await sb.from("account_requirement_status")
+    .update({status:"blocked", blocked_reason: reason || "Flagged — needs a closer look.", updated_at:new Date().toISOString()})
+    .eq("account_id", accountId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't flag that.", "orange"); return; }
+  await logAccountActivity(accountId, "Flagged: "+cfg.label, reason);
+  toast("Flagged as a blocker.", "orange");
+  await refreshAndRerender();
+}
+async function resolveAccountReq(accountId, reqId){
+  const cfg = reqConfig(getAccount(accountId).stageId, reqId);
+  const {error} = await sb.from("account_requirement_status")
+    .update({status:"pending", blocked_reason:null, updated_at:new Date().toISOString()})
+    .eq("account_id", accountId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't reopen that.", "orange"); return; }
+  await logAccountActivity(accountId, "Reopened for review: "+cfg.label, "");
+  toast("Sent back for fresh evidence.");
+  await refreshAndRerender();
+}
+async function advanceAccountStage(accountId){
+  const a = getAccount(accountId);
+  const an = analyzeStage(a);
+  if(!an.allRequiredVerified){ toast("Can't advance — required gates still open.", "orange"); return; }
+  const next = nextStageId(a.stageId);
+  if(!next) return;
+  await ensureAccountReqRows(next, accountId);
+  const {error} = await sb.from("accounts")
+    .update({stage_id:next, stage_entered_at:new Date().toISOString()})
+    .eq("id", accountId);
+  if(error){ toast("Couldn't advance that.", "orange"); return; }
+  await logAccountActivity(accountId, "Advanced to "+stageName(next), "All required gates cleared.");
+  toast("Advanced to "+stageName(next)+".");
+  await refreshAndRerender();
+}
+async function completeAccountCycle(accountId){
+  const a = getAccount(accountId);
+  const an = analyzeStage(a);
+  if(!an.allRequiredVerified){ toast("Not ready yet — required gates still open.", "orange"); return; }
+  const firstStage = ACC_STAGES[0].id;
+  const {error: e1} = await sb.from("account_requirement_status")
+    .update({status:"pending", evidence:null, verified_by:null, verified_at:null, blocked_reason:null, updated_at:new Date().toISOString()})
+    .eq("account_id", accountId);
+  if(e1){ toast("Couldn't reset that cycle.", "orange"); return; }
+  const cycleNum = a.cycleNumber || 1;
+  const {error: e2} = await sb.from("accounts")
+    .update({stage_id:firstStage, stage_entered_at:new Date().toISOString(), cycle_number:cycleNum+1})
+    .eq("id", accountId);
+  if(e2){ toast("Couldn't update that.", "orange"); return; }
+  await logAccountActivity(accountId, "Completed Cycle "+cycleNum, "Starting Cycle "+(cycleNum+1)+".");
+  toast("Cycle complete — new cycle started. \u{1F501}");
+  await refreshAndRerender();
+}
+
 /* ---------------------------------------------------------- */
 /* ANALYSIS (pure — unchanged shape from the prototype)          */
 /* ---------------------------------------------------------- */
@@ -419,12 +545,16 @@ function analyzeStage(o){
   return {items, allRequiredVerified, hasCritical};
 }
 function activeRecords(){
-  return [...STATE.opportunities.filter(o=>o.status==="active"), ...STATE.clients.filter(c=>c.status==="active")];
+  return [
+    ...STATE.opportunities.filter(o=>o.status==="active").map(o=>({o, type:"opportunity"})),
+    ...STATE.clients.filter(c=>c.status==="active").map(o=>({o, type:"client"})),
+    ...STATE.accounts.filter(a=>a.status==="active").map(o=>({o, type:"account"}))
+  ];
 }
 function fuelGaugeData(){
   let judged=0, verified=0, criticalInstances=0;
   const criticalOppIds = new Set();
-  activeRecords().forEach(o=>{
+  activeRecords().forEach(({o})=>{
     const a = analyzeStage(o);
     a.items.forEach(it=>{
       if(!it.cfg.required) return;
@@ -485,14 +615,15 @@ const NAV_LIVE = [
   {id:"quality", label:"Quality",        glyph:"✓"}
 ];
 const NAV_LIVE_V2 = [
-  {id:"onboarding", label:"Onboarding", glyph:"\u{1F6E0}"}
+  {id:"onboarding", label:"Onboarding", glyph:"\u{1F6E0}"},
+  {id:"accounts",   label:"Clients",    glyph:"\u{1F91D}"}
 ];
 const NAV_ADMIN = [
   {id:"admin", label:"SOP Gates", glyph:"⚙"},
   {id:"team",  label:"Team",      glyph:"⛁"}
 ];
 const NAV_V2 = [
-  {id:"clients",label:"Clients"},{id:"campaigns",label:"Campaigns"},
+  {id:"campaigns",label:"Campaigns"},
   {id:"content",label:"Content"},{id:"reporting",label:"Reporting"},{id:"automations",label:"Automations"}
 ];
 const NAV_V3 = [
@@ -503,6 +634,7 @@ const PAGE_META = {
   sales:{kicker:"HUNTER", title:"SALES WORKFLOW"},
   quality:{kicker:"PROCESS · QUALITY · GROWTH", title:"VERIFICATION QUEUE"},
   onboarding:{kicker:"FLOW", title:"ONBOARDING WORKFLOW"},
+  accounts:{kicker:"GROW", title:"CLIENT WORKFLOW"},
   admin:{kicker:"ADMIN — WORKFLOW ENGINE", title:"SOP GATES"},
   team:{kicker:"ADMIN — WORKFLOW ENGINE", title:"TEAM"}
 };
@@ -542,6 +674,7 @@ function showView(viewId){
   if(viewId==="sales") renderSales();
   if(viewId==="quality") renderQuality();
   if(viewId==="onboarding") renderOnboarding();
+  if(viewId==="accounts") renderAccounts();
   if(viewId==="admin") renderAdmin();
   if(viewId==="team") renderTeam();
 }
@@ -594,8 +727,7 @@ function renderCommand(){
   const avgDays = active.length ? Math.round(active.reduce((s,o)=>s+daysInStage(o),0)/active.length) : 0;
 
   let criticalGroups = [], verifyGroups = [], readyList = [];
-  activeRecords().forEach(o=>{
-    const type = STATE.clients.includes(o) ? "client" : "opportunity";
+  activeRecords().forEach(({o,type})=>{
     const a = analyzeStage(o);
     const crits = a.items.filter(i=>i.severity==="critical");
     const infos = a.items.filter(i=>i.severity==="info");
@@ -614,7 +746,7 @@ function renderCommand(){
     ${metricTile(avgDays+"d","Avg. Days In Stage")}
   `;
 
-  const wfTag = (type)=> `<span class="pill neutral">${type==="client"?"ONBOARDING":"SALES"}</span>`;
+  const wfTag = (type)=> `<span class="pill neutral">${type==="client"?"ONBOARDING":type==="account"?"CLIENTS":"SALES"}</span>`;
 
   document.getElementById("critKicker").textContent = criticalGroups.length ? "CRITICAL · "+criticalGroups.length : "CRITICAL";
   document.getElementById("attention").innerHTML = criticalGroups.length ? criticalGroups.map(({o,type,items,days})=>{
@@ -643,13 +775,13 @@ function renderCommand(){
     const next = nextStageId(o.stageId);
     const isOpp = type==="opportunity";
     const isFinal = isOpp && o.stageId==="handoff";
-    const isClientFinal = !isOpp && !next;
     let label, action;
     if(isFinal){ label = "SEND TO FLOW"; action = "send-handoff"; }
-    else if(isClientFinal){ label = "MARK LIVE"; action = "mark-live"; }
+    else if(type==="client" && !next){ label = "MARK LIVE"; action = "mark-live"; }
+    else if(type==="account" && !next){ label = "COMPLETE CYCLE"; action = "complete-cycle"; }
     else { label = "ADVANCE → "+stageName(next).toUpperCase(); action = "advance"; }
     return `<div class="ready-row">
-      <div style="flex:1"><b>${esc(o.business)}</b> <span class="stage-arrow">· ${stageName(o.stageId)} gate clear</span></div>
+      <div style="flex:1"><b>${esc(o.business)}</b> <span class="stage-arrow">· ${stageName(o.stageId)} gate clear</span> ${wfTag(type)}</div>
       <span class="att-value mono">${money(o.value)}</span>
       <button class="btn small primary" data-action="${action}" data-type="${type}" data-id="${o.id}">${label} →</button>
     </div>`;
@@ -713,10 +845,37 @@ function clientCard(c){
 }
 
 /* ---------------------------------------------------------- */
+/* CLIENTS / ONGOING ACCOUNT MANAGEMENT (cyclical)               */
+/* ---------------------------------------------------------- */
+function renderAccounts(){
+  const cols = ACC_STAGES.map(st=>{
+    const accs = STATE.accounts.filter(a=>a.stageId===st.id && a.status==="active");
+    const value = accs.reduce((s,a)=>s+a.value,0);
+    return `<div class="stage-col">
+      <div class="stage-col-head"><b>${esc(st.name)}</b><div class="stage-meta"><span>${accs.length} OPEN</span><span>${money(value)}</span></div></div>
+      <div class="stage-col-body">${accs.map(a=>accountCard(a)).join("") || `<div class="empty-state" style="padding:16px 10px;">EMPTY</div>`}</div>
+    </div>`;
+  }).join("");
+  document.getElementById("pipeline-acc").innerHTML = cols;
+}
+function accountCard(a){
+  const an = analyzeStage(a);
+  const critical = an.hasCritical;
+  const badge = critical ? `<span class="pill critical">BLOCKED</span>` : an.allRequiredVerified ? `<span class="pill blue">READY</span>` : `<span class="pill neutral">IN PROGRESS</span>`;
+  return `<button class="deal-card ${critical?"state-critical":""}" data-action="open-deal" data-type="account" data-id="${a.id}">
+    <div class="biz">${esc(a.business)}</div>
+    <div class="contact">${esc(a.contact)} · CYCLE ${a.cycleNumber}</div>
+    <div class="foot"><span class="value mono">${money(a.value)}</span>${badge}</div>
+    <div class="days">${daysInStage(a)}D IN STAGE</div>
+  </button>`;
+}
+
+/* ---------------------------------------------------------- */
 /* OPPORTUNITY DETAIL                                            */
 /* ---------------------------------------------------------- */
 function openDeal(id){ openRecordDialog(id, "opportunity"); }
 function openClient(id){ openRecordDialog(id, "client"); }
+function openAccount(id){ openRecordDialog(id, "account"); }
 function openRecordDialog(id, type){
   const dlg = document.getElementById("dealDialog");
   dlg.dataset.recordType = type;
@@ -746,7 +905,7 @@ function renderRecordDetail(id, type){
     gateBanner = `<div class="gate-banner blocked"><span class="g-icon mono">LOST</span><span>${esc(o.lostReason||"Marked lost.")}</span></div>`;
   } else if(isOpp && o.status==="handed_off"){
     gateBanner = `<div class="handed-badge">✓ HANDED TO FLOW — IN DELIVERY</div>`;
-  } else if(!isOpp && o.status==="live"){
+  } else if(type==="client" && o.status==="live"){
     gateBanner = `<div class="handed-badge">✓ LIVE — ONBOARDING COMPLETE</div>`;
   } else if(a.hasCritical){
     gateBanner = `<div class="gate-banner blocked"><span class="g-icon mono">GATE BLOCKED</span><span>This stage can't advance until every critical item is resolved.</span></div>`;
@@ -775,9 +934,13 @@ function renderRecordDetail(id, type){
   let decisionHtml = "";
   if(o.status==="active" && !(isOpp && o.stageId==="handoff")){
     const next = nextStageId(o.stageId);
-    if(!isOpp && !next){
+    if(type==="client" && !next){
       decisionHtml = `<div class="decision-row">
         <button class="btn primary" data-action="mark-live" data-type="client" data-id="${o.id}" ${a.allRequiredVerified?"":"disabled"}>MARK LIVE →</button>
+      </div>`;
+    } else if(type==="account" && !next){
+      decisionHtml = `<div class="decision-row">
+        <button class="btn primary" data-action="complete-cycle" data-type="account" data-id="${o.id}" ${a.allRequiredVerified?"":"disabled"}>COMPLETE CYCLE → START CYCLE ${(o.cycleNumber||1)+1} →</button>
       </div>`;
     } else if(next){
       const isFinalGate = isOpp && o.stageId==="contract";
@@ -798,10 +961,12 @@ function renderRecordDetail(id, type){
       </div>
     </div>`).join("");
 
-  const kicker = isOpp ? "HUNTER · OPPORTUNITY" : "FLOW · CLIENT";
+  const kicker = isOpp ? "HUNTER · OPPORTUNITY" : type==="account" ? "GROW · CLIENT ACCOUNT" : "FLOW · CLIENT";
   const subFields = isOpp
     ? `<span>CONTACT <b>${esc(o.contact)}</b></span><span>VALUE <b>${money(o.value)}</b></span><span>SOURCE <b>${esc(o.source)}</b></span><span>IN STAGE <b>${daysInStage(o)}D</b></span>`
-    : `<span>CONTACT <b>${esc(o.contact)}</b></span><span>VALUE <b>${money(o.value)}</b></span><span>IN STAGE <b>${daysInStage(o)}D</b></span>`;
+    : type==="account"
+      ? `<span>CONTACT <b>${esc(o.contact)}</b></span><span>VALUE <b>${money(o.value)}</b></span><span>CYCLE <b>${o.cycleNumber}</b></span><span>IN STAGE <b>${daysInStage(o)}D</b></span>`
+      : `<span>CONTACT <b>${esc(o.contact)}</b></span><span>VALUE <b>${money(o.value)}</b></span><span>IN STAGE <b>${daysInStage(o)}D</b></span>`;
 
   document.getElementById("dealPanel").innerHTML = `
     <div class="modalHead">
@@ -860,8 +1025,7 @@ function renderQuality(){
   const dims = [["all","ALL"],["process","PROCESS"],["quality","QUALITY"],["growth","GROWTH"]];
   filters.innerHTML = dims.map(([id,l])=>`<button class="chip-filter ${STATE.ui.qDim===id?"active":""}" data-action="qfilter" data-dim="${id}">${l}</button>`).join("");
   let rows = [];
-  activeRecords().forEach(o=>{
-    const type = STATE.clients.includes(o) ? "client" : "opportunity";
+  activeRecords().forEach(({o,type})=>{
     stageReqs(o.stageId).forEach(cfg=>{
       const st = o.reqStatus[cfg.id];
       if(!st || st.status!=="submitted") return;
@@ -872,7 +1036,7 @@ function renderQuality(){
   document.getElementById("qualityView").innerHTML = rows.length ? rows.map(({o,cfg,st,type})=>`
     <div class="q-row">
       <div class="q-main">
-        <div class="att-top"><span class="att-biz">${esc(o.business)}</span>${dimTags(cfg.dims)}<span class="pill neutral">${stageName(o.stageId)}</span><span class="pill neutral">${type==="client"?"ONBOARDING":"SALES"}</span></div>
+        <div class="att-top"><span class="att-biz">${esc(o.business)}</span>${dimTags(cfg.dims)}<span class="pill neutral">${stageName(o.stageId)}</span><span class="pill neutral">${type==="client"?"ONBOARDING":type==="account"?"CLIENTS":"SALES"}</span></div>
         <div class="q-req">${esc(cfg.label)}</div>
         <div class="req-evidence" style="margin-top:8px; max-width:60ch;">${esc(st.evidence||"")}</div>
       </div>
@@ -901,6 +1065,8 @@ function renderAdmin(){
     ${STAGES.map(block).join("")}
     <div class="sectionTitle" style="margin-top:30px;"><div><span class="kicker blue">ONBOARDING</span><h3 style="font-size:20px;">FLOW WORKFLOW</h3></div></div>
     ${ONB_STAGES.map(block).join("")}
+    <div class="sectionTitle" style="margin-top:30px;"><div><span class="kicker amber">CLIENTS</span><h3 style="font-size:20px;">GROW WORKFLOW</h3></div></div>
+    ${ACC_STAGES.map(block).join("")}
   `;
 }
 function adminReqRow(stageId, r){
@@ -1006,6 +1172,7 @@ function showViewSilently(viewId){
   if(viewId==="sales") renderSales();
   if(viewId==="quality") renderQuality();
   if(viewId==="onboarding") renderOnboarding();
+  if(viewId==="accounts") renderAccounts();
   if(viewId==="admin") renderAdmin();
   if(viewId==="team") renderTeam();
 }
@@ -1015,6 +1182,8 @@ function subscribeRealtime(){
     .on("postgres_changes", {event:"*", schema:"public", table:"requirement_status"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"clients"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"client_requirement_status"}, handleRealtimeChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"accounts"}, handleRealtimeChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"account_requirement_status"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"activity_log"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"requirements"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"profiles"}, handleRealtimeChange)
@@ -1088,34 +1257,40 @@ function wireEvents(){
     const action = t.dataset.action;
 
     const recType = t.dataset.type || "opportunity";
-    const isClientAction = recType === "client";
+    const RECORD_HANDLERS = {
+      opportunity: {submitEvidence, verifyReq, flagReq, resolveReq, advance:advanceStage},
+      client:      {submitEvidence:submitClientEvidence, verifyReq:verifyClientReq, flagReq:flagClientReq, resolveReq:resolveClientReq, advance:advanceClientStage},
+      account:     {submitEvidence:submitAccountEvidence, verifyReq:verifyAccountReq, flagReq:flagAccountReq, resolveReq:resolveAccountReq, advance:advanceAccountStage}
+    };
+    const H = RECORD_HANDLERS[recType] || RECORD_HANDLERS.opportunity;
 
     if(action==="nav"){ showView(t.dataset.view); return; }
     if(action==="roadmap"){ renderRoadmap(t.dataset.label); return; }
     if(action==="open-new"){ document.getElementById("newDialog").showModal(); return; }
     if(action==="open-deal"){
       document.getElementById("dealDialog").dataset.dealId = t.dataset.id;
-      isClientAction ? openClient(t.dataset.id) : openDeal(t.dataset.id);
+      openRecordDialog(t.dataset.id, recType);
       return;
     }
 
     if(action==="submit-evidence"){
       const input = t.closest(".req-item").querySelector('[data-role="evidence-input"]');
       const text = (input && input.value.trim()) || "Marked complete — no notes added.";
-      isClientAction ? await submitClientEvidence(t.dataset.id, t.dataset.req, text) : await submitEvidence(t.dataset.id, t.dataset.req, text);
+      await H.submitEvidence(t.dataset.id, t.dataset.req, text);
       return;
     }
-    if(action==="verify-req"){ isClientAction ? await verifyClientReq(t.dataset.id, t.dataset.req) : await verifyReq(t.dataset.id, t.dataset.req); return; }
+    if(action==="verify-req"){ await H.verifyReq(t.dataset.id, t.dataset.req); return; }
     if(action==="show-flag"){ t.closest(".req-item").querySelector('[data-role="flag-row"]').style.display="flex"; return; }
     if(action==="flag-req"){
       const input = t.closest(".req-item").querySelector('[data-role="flag-input"]');
-      isClientAction ? await flagClientReq(t.dataset.id, t.dataset.req, input.value.trim()) : await flagReq(t.dataset.id, t.dataset.req, input.value.trim());
+      await H.flagReq(t.dataset.id, t.dataset.req, input.value.trim());
       return;
     }
-    if(action==="resolve-req" || action==="reopen-req"){ isClientAction ? await resolveClientReq(t.dataset.id, t.dataset.req) : await resolveReq(t.dataset.id, t.dataset.req); return; }
+    if(action==="resolve-req" || action==="reopen-req"){ await H.resolveReq(t.dataset.id, t.dataset.req); return; }
 
-    if(action==="advance"){ isClientAction ? await advanceClientStage(t.dataset.id) : await advanceStage(t.dataset.id); return; }
+    if(action==="advance"){ await H.advance(t.dataset.id); return; }
     if(action==="mark-live"){ await markClientLive(t.dataset.id); return; }
+    if(action==="complete-cycle"){ await completeAccountCycle(t.dataset.id); return; }
     if(action==="mark-lost"){ await markLost(t.dataset.id, "Marked lost from Command Center."); return; }
     if(action==="toggle-handoff"){ await toggleHandoff(t.dataset.id, t.dataset.req); return; }
     if(action==="send-handoff"){ await sendHandoff(t.dataset.id); return; }
