@@ -46,18 +46,22 @@ const DIM_LABEL = {process:"Process", quality:"Quality", growth:"Growth"};
 /* ---------------------------------------------------------- */
 /* STATE                                                        */
 /* ---------------------------------------------------------- */
-let STAGES = [];              // [{id,name,order}]
+let STAGES = [];              // [{id,name,order}] — Sales
+let ONB_STAGES = [];          // [{id,name,order}] — Onboarding
 let STATE = {
   session:null, profile:null,     // {id, fullName, role}
   profiles:{},                    // id -> {fullName, role, email}
-  requirements:{},                // stageId -> [{id,label,dims,required,dept,thresholdDays,sortOrder}]
+  requirements:{},                // stageId -> [{id,label,dims,required,dept,thresholdDays,sortOrder}] (shared across workflows — stage ids are unique)
   opportunities:[],
+  clients:[],
   ui:{ view:"command", qDim:"all", search:"" }
 };
-const STAGE_ORDER = () => STAGES.map(s=>s.id);
-function nextStageId(id){ const order = STAGE_ORDER(); const i = order.indexOf(id); return i>=0 && i<order.length-1 ? order[i+1] : null; }
-function stageName(id){ const s = STAGES.find(x=>x.id===id); return s ? s.name : id; }
+function stagesArrFor(stageId){ return STAGES.some(s=>s.id===stageId) ? STAGES : ONB_STAGES; }
+function nextStageId(id){ const arr = stagesArrFor(id); const order = arr.map(s=>s.id); const i = order.indexOf(id); return i>=0 && i<order.length-1 ? order[i+1] : null; }
+function stageName(id){ const s = STAGES.find(x=>x.id===id) || ONB_STAGES.find(x=>x.id===id); return s ? s.name : id; }
 function getOpp(id){ return STATE.opportunities.find(o=>o.id===id); }
+function getClient(id){ return STATE.clients.find(c=>c.id===id); }
+function getRecord(id, type){ return type==="client" ? getClient(id) : getOpp(id); }
 function reqConfig(stageId, reqId){ return (STATE.requirements[stageId]||[]).find(r=>r.id===reqId); }
 function stageReqs(stageId){ return STATE.requirements[stageId]||[]; }
 function daysInStage(o){ return Math.floor((nowTs()-o.stageEnteredAt)/DAY); }
@@ -69,11 +73,12 @@ function dimsLabel(stageId, reqId){ const c = reqConfig(stageId, reqId); return 
 /* ---------------------------------------------------------- */
 async function loadEngineConfig(){
   const [{data: stages, error: se}, {data: reqs, error: re}] = await Promise.all([
-    sb.from("stages").select("*").eq("workflow_id","sales").order("sort_order"),
+    sb.from("stages").select("*").order("sort_order"),
     sb.from("requirements").select("*").order("sort_order")
   ]);
   if(se || re){ console.error(se||re); toast("Couldn't load workflow config.", "orange"); return; }
-  STAGES = (stages||[]).map(s=>({id:s.id, name:s.name, order:s.sort_order}));
+  STAGES = (stages||[]).filter(s=>s.workflow_id==="sales").map(s=>({id:s.id, name:s.name, order:s.sort_order}));
+  ONB_STAGES = (stages||[]).filter(s=>s.workflow_id==="onboarding").map(s=>({id:s.id, name:s.name, order:s.sort_order}));
   const grouped = {};
   (reqs||[]).forEach(r=>{
     (grouped[r.stage_id] = grouped[r.stage_id]||[]).push({
@@ -120,10 +125,39 @@ async function loadOpportunities(){
   });
 }
 
+async function loadClients(){
+  const {data, error} = await sb.from("clients")
+    .select("*, client_requirement_status(*), activity_log(*)")
+    .order("created_at", {ascending:false});
+  if(error){ console.error(error); toast("Couldn't load onboarding clients.", "orange"); return; }
+  STATE.clients = (data||[]).map(c=>{
+    const reqStatus = {};
+    (c.client_requirement_status||[]).forEach(rs=>{
+      reqStatus[rs.requirement_id] = {
+        status: rs.status,
+        evidence: rs.evidence,
+        verifiedBy: rs.verified_by ? (STATE.profiles[rs.verified_by]||{}).fullName || "a teammate" : null,
+        verifiedAt: rs.verified_at ? new Date(rs.verified_at).getTime() : null,
+        blockedReason: rs.blocked_reason,
+        updatedAt: new Date(rs.updated_at).getTime()
+      };
+    });
+    const activity = (c.activity_log||[])
+      .map(a=>({ts:new Date(a.created_at).getTime(), actor:a.actor_name, action:a.action, detail:a.detail||""}))
+      .sort((a,b)=>b.ts-a.ts);
+    return {
+      id:c.id, business:c.business, contact:c.contact, value:Number(c.value),
+      stageId:c.stage_id, stageEnteredAt:new Date(c.stage_entered_at).getTime(), createdAt:new Date(c.created_at).getTime(),
+      status:c.status, sourceOpportunityId:c.source_opportunity_id, reqStatus, activity
+    };
+  });
+}
+
 async function refreshAll(){
   await loadProfiles();
   await loadEngineConfig();
   await loadOpportunities();
+  await loadClients();
 }
 
 /* ---------------------------------------------------------- */
@@ -143,9 +177,15 @@ async function ensureReqRows(stageId, opportunityId){
 }
 async function ensureNewRequirementRows(stageId, requirementId){
   const {data: opps} = await sb.from("opportunities").select("id").eq("stage_id", stageId).eq("status","active");
-  if(!opps || !opps.length) return;
-  const rows = opps.map(o=>({opportunity_id:o.id, requirement_id:requirementId, status:"pending"}));
-  await sb.from("requirement_status").upsert(rows, {onConflict:"opportunity_id,requirement_id", ignoreDuplicates:true});
+  if(opps && opps.length){
+    const rows = opps.map(o=>({opportunity_id:o.id, requirement_id:requirementId, status:"pending"}));
+    await sb.from("requirement_status").upsert(rows, {onConflict:"opportunity_id,requirement_id", ignoreDuplicates:true});
+  }
+  const {data: clis} = await sb.from("clients").select("id").eq("stage_id", stageId).eq("status","active");
+  if(clis && clis.length){
+    const rows = clis.map(c=>({client_id:c.id, requirement_id:requirementId, status:"pending"}));
+    await sb.from("client_requirement_status").upsert(rows, {onConflict:"client_id,requirement_id", ignoreDuplicates:true});
+  }
 }
 
 async function submitEvidence(oppId, reqId, text){
@@ -234,7 +274,7 @@ async function sendHandoff(oppId){
   await refreshAndRerender();
 }
 async function createOpportunity(fields){
-  const stageId = STAGE_ORDER()[0];
+  const stageId = STAGES[0].id;
   const {data, error} = await sb.from("opportunities").insert({
     business: fields.business, contact: fields.contact, source: fields.source,
     value: Number(fields.value)||0, stage_id: stageId, created_by: STATE.session.user.id
@@ -281,6 +321,85 @@ async function updateTeamRole(profileId, role){
   await refreshAndRerender();
 }
 
+/* ---------------- Onboarding / clients mutations ---------------- */
+async function logClientActivity(clientId, action, detail){
+  await sb.from("activity_log").insert({
+    client_id: clientId, actor_id: STATE.session.user.id, actor_name: actorName(),
+    action, detail: detail || null
+  });
+}
+async function ensureClientReqRows(stageId, clientId){
+  const reqs = stageReqs(stageId);
+  if(!reqs.length) return;
+  const rows = reqs.map(r=>({client_id:clientId, requirement_id:r.id, status:"pending"}));
+  await sb.from("client_requirement_status").upsert(rows, {onConflict:"client_id,requirement_id", ignoreDuplicates:true});
+}
+async function submitClientEvidence(clientId, reqId, text){
+  const cfg = reqConfig(getClient(clientId).stageId, reqId);
+  const {error} = await sb.from("client_requirement_status")
+    .update({status:"submitted", evidence:text, updated_at:new Date().toISOString()})
+    .eq("client_id", clientId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't save that.", "orange"); return; }
+  await logClientActivity(clientId, "Submitted evidence: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
+  toast("Evidence submitted — awaiting verification.");
+  await refreshAndRerender();
+}
+async function verifyClientReq(clientId, reqId){
+  const cfg = reqConfig(getClient(clientId).stageId, reqId);
+  const {error} = await sb.from("client_requirement_status")
+    .update({status:"verified", verified_by:STATE.session.user.id, verified_at:new Date().toISOString(), updated_at:new Date().toISOString()})
+    .eq("client_id", clientId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't verify that.", "orange"); return; }
+  await logClientActivity(clientId, "Verified: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
+  toast("Verified.");
+  await refreshAndRerender();
+}
+async function flagClientReq(clientId, reqId, reason){
+  const cfg = reqConfig(getClient(clientId).stageId, reqId);
+  const {error} = await sb.from("client_requirement_status")
+    .update({status:"blocked", blocked_reason: reason || "Flagged — needs a closer look.", updated_at:new Date().toISOString()})
+    .eq("client_id", clientId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't flag that.", "orange"); return; }
+  await logClientActivity(clientId, "Flagged: "+cfg.label, reason);
+  toast("Flagged as a blocker.", "orange");
+  await refreshAndRerender();
+}
+async function resolveClientReq(clientId, reqId){
+  const cfg = reqConfig(getClient(clientId).stageId, reqId);
+  const {error} = await sb.from("client_requirement_status")
+    .update({status:"pending", blocked_reason:null, updated_at:new Date().toISOString()})
+    .eq("client_id", clientId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't reopen that.", "orange"); return; }
+  await logClientActivity(clientId, "Reopened for review: "+cfg.label, "");
+  toast("Sent back for fresh evidence.");
+  await refreshAndRerender();
+}
+async function advanceClientStage(clientId){
+  const c = getClient(clientId);
+  const a = analyzeStage(c);
+  if(!a.allRequiredVerified){ toast("Can't advance — required gates still open.", "orange"); return; }
+  const next = nextStageId(c.stageId);
+  if(!next) return;
+  await ensureClientReqRows(next, clientId);
+  const {error} = await sb.from("clients")
+    .update({stage_id:next, stage_entered_at:new Date().toISOString()})
+    .eq("id", clientId);
+  if(error){ toast("Couldn't advance that.", "orange"); return; }
+  await logClientActivity(clientId, "Advanced to "+stageName(next), "All required gates cleared.");
+  toast("Advanced to "+stageName(next)+".");
+  await refreshAndRerender();
+}
+async function markClientLive(clientId){
+  const c = getClient(clientId);
+  const a = analyzeStage(c);
+  if(!a.allRequiredVerified){ toast("Not ready yet — required gates still open.", "orange"); return; }
+  const {error} = await sb.from("clients").update({status:"live"}).eq("id", clientId);
+  if(error){ toast("Couldn't update that.", "orange"); return; }
+  await logClientActivity(clientId, "Marked Live", "Onboarding complete — client is now live.");
+  toast("Client is live. \u{1F3C1}");
+  await refreshAndRerender();
+}
+
 /* ---------------------------------------------------------- */
 /* ANALYSIS (pure — unchanged shape from the prototype)          */
 /* ---------------------------------------------------------- */
@@ -299,10 +418,13 @@ function analyzeStage(o){
   const hasCritical = items.some(i=>i.severity==="critical");
   return {items, allRequiredVerified, hasCritical};
 }
+function activeRecords(){
+  return [...STATE.opportunities.filter(o=>o.status==="active"), ...STATE.clients.filter(c=>c.status==="active")];
+}
 function fuelGaugeData(){
   let judged=0, verified=0, criticalInstances=0;
   const criticalOppIds = new Set();
-  STATE.opportunities.filter(o=>o.status==="active").forEach(o=>{
+  activeRecords().forEach(o=>{
     const a = analyzeStage(o);
     a.items.forEach(it=>{
       if(!it.cfg.required) return;
@@ -362,12 +484,15 @@ const NAV_LIVE = [
   {id:"sales",   label:"Sales",          glyph:"↗"},
   {id:"quality", label:"Quality",        glyph:"✓"}
 ];
+const NAV_LIVE_V2 = [
+  {id:"onboarding", label:"Onboarding", glyph:"\u{1F6E0}"}
+];
 const NAV_ADMIN = [
   {id:"admin", label:"SOP Gates", glyph:"⚙"},
   {id:"team",  label:"Team",      glyph:"⛁"}
 ];
 const NAV_V2 = [
-  {id:"clients",label:"Clients"},{id:"onboarding",label:"Onboarding"},{id:"campaigns",label:"Campaigns"},
+  {id:"clients",label:"Clients"},{id:"campaigns",label:"Campaigns"},
   {id:"content",label:"Content"},{id:"reporting",label:"Reporting"},{id:"automations",label:"Automations"}
 ];
 const NAV_V3 = [
@@ -377,6 +502,7 @@ const PAGE_META = {
   command:{kicker:"ADVENTURE FUEL OS", title:"COMMAND CENTER"},
   sales:{kicker:"HUNTER", title:"SALES WORKFLOW"},
   quality:{kicker:"PROCESS · QUALITY · GROWTH", title:"VERIFICATION QUEUE"},
+  onboarding:{kicker:"FLOW", title:"ONBOARDING WORKFLOW"},
   admin:{kicker:"ADMIN — WORKFLOW ENGINE", title:"SOP GATES"},
   team:{kicker:"ADMIN — WORKFLOW ENGINE", title:"TEAM"}
 };
@@ -387,6 +513,8 @@ function renderNav(){
   let html = `<div class="nav-group-label">Live — V1</div>`;
   NAV_LIVE.forEach(item=>{ html += navBtn(item, STATE.ui.view===item.id, false, null); });
   if(isAdmin) NAV_ADMIN.forEach(item=>{ html += navBtn(item, STATE.ui.view===item.id, false, null); });
+  html += `<div class="nav-group-label">Live — V2</div>`;
+  NAV_LIVE_V2.forEach(item=>{ html += navBtn(item, STATE.ui.view===item.id, false, null); });
   html += `<div class="nav-group-label">V2 — Workflow Engine</div>`;
   NAV_V2.forEach(item=>{ html += navBtn(item, false, true, "V2"); });
   html += `<div class="nav-group-label">V3 — Intelligence</div>`;
@@ -413,6 +541,7 @@ function showView(viewId){
   if(viewId==="command") renderCommand();
   if(viewId==="sales") renderSales();
   if(viewId==="quality") renderQuality();
+  if(viewId==="onboarding") renderOnboarding();
   if(viewId==="admin") renderAdmin();
   if(viewId==="team") renderTeam();
 }
@@ -465,13 +594,14 @@ function renderCommand(){
   const avgDays = active.length ? Math.round(active.reduce((s,o)=>s+daysInStage(o),0)/active.length) : 0;
 
   let criticalGroups = [], verifyGroups = [], readyList = [];
-  active.forEach(o=>{
+  activeRecords().forEach(o=>{
+    const type = STATE.clients.includes(o) ? "client" : "opportunity";
     const a = analyzeStage(o);
     const crits = a.items.filter(i=>i.severity==="critical");
     const infos = a.items.filter(i=>i.severity==="info");
-    if(crits.length) criticalGroups.push({o, items:crits, days:daysInStage(o)});
-    if(infos.length) verifyGroups.push({o, items:infos});
-    if(a.allRequiredVerified) readyList.push({o});
+    if(crits.length) criticalGroups.push({o, type, items:crits, days:daysInStage(o)});
+    if(infos.length) verifyGroups.push({o, type, items:infos});
+    if(a.allRequiredVerified) readyList.push({o, type});
   });
   criticalGroups.sort((a,b)=>b.days-a.days);
 
@@ -484,36 +614,44 @@ function renderCommand(){
     ${metricTile(avgDays+"d","Avg. Days In Stage")}
   `;
 
+  const wfTag = (type)=> `<span class="pill neutral">${type==="client"?"ONBOARDING":"SALES"}</span>`;
+
   document.getElementById("critKicker").textContent = criticalGroups.length ? "CRITICAL · "+criticalGroups.length : "CRITICAL";
-  document.getElementById("attention").innerHTML = criticalGroups.length ? criticalGroups.map(({o,items,days})=>{
+  document.getElementById("attention").innerHTML = criticalGroups.length ? criticalGroups.map(({o,type,items,days})=>{
     const dims = [...new Set(items.flatMap(i=>i.cfg.dims))];
     return `<div class="att-card critical">
       <div class="att-main">
-        <div class="att-top"><span class="att-biz">${esc(o.business)}</span><span class="pill critical">${items.length} GATE${items.length>1?"S":""} BLOCKED</span><span class="pill neutral">${stageName(o.stageId)}</span>${dimTags(dims)}</div>
+        <div class="att-top"><span class="att-biz">${esc(o.business)}</span><span class="pill critical">${items.length} GATE${items.length>1?"S":""} BLOCKED</span><span class="pill neutral">${stageName(o.stageId)}</span>${wfTag(type)}${dimTags(dims)}</div>
         <div class="att-detail-list">${items.map(it=>`<div>${it.state.status==="blocked" ? "Flagged: "+esc(it.state.blockedReason||"") : esc(it.cfg.label)+" — "+days+"d in stage, "+it.cfg.thresholdDays+"d gate"}</div>`).join("")}</div>
       </div>
-      <div class="att-side"><span class="att-value mono">${money(o.value)}</span><button class="btn small danger" data-action="open-deal" data-id="${o.id}">RESOLVE →</button></div>
+      <div class="att-side"><span class="att-value mono">${money(o.value)}</span><button class="btn small danger" data-action="open-deal" data-type="${type}" data-id="${o.id}">RESOLVE →</button></div>
     </div>`;
   }).join("") : `<div class="empty-state">NO CRITICAL BLOCKERS — CLEAN BOARD.</div>`;
 
-  document.getElementById("verifyQueue").innerHTML = verifyGroups.length ? verifyGroups.slice(0,6).map(({o,items})=>{
+  document.getElementById("verifyQueue").innerHTML = verifyGroups.length ? verifyGroups.slice(0,6).map(({o,type,items})=>{
     const dims = [...new Set(items.flatMap(i=>i.cfg.dims))];
     return `<div class="att-card blue">
       <div class="att-main">
-        <div class="att-top"><span class="att-biz">${esc(o.business)}</span><span class="pill blue">${items.length} awaiting review</span>${dimTags(dims)}</div>
+        <div class="att-top"><span class="att-biz">${esc(o.business)}</span><span class="pill blue">${items.length} awaiting review</span>${wfTag(type)}${dimTags(dims)}</div>
         <div class="att-detail-list">${items.map(it=>`<div>${esc(it.cfg.label)}</div>`).join("")}</div>
       </div>
-      <div class="att-side"><button class="btn small ghost-blue" data-action="open-deal" data-id="${o.id}">REVIEW →</button></div>
+      <div class="att-side"><button class="btn small ghost-blue" data-action="open-deal" data-type="${type}" data-id="${o.id}">REVIEW →</button></div>
     </div>`;
   }).join("") : `<div class="empty-state">NOTHING WAITING ON YOU.</div>`;
 
-  document.getElementById("readyList").innerHTML = readyList.length ? readyList.map(({o})=>{
-    const isFinal = o.stageId==="handoff";
-    const label = isFinal ? "SEND TO FLOW" : "ADVANCE → "+stageName(nextStageId(o.stageId)).toUpperCase();
+  document.getElementById("readyList").innerHTML = readyList.length ? readyList.map(({o,type})=>{
+    const next = nextStageId(o.stageId);
+    const isOpp = type==="opportunity";
+    const isFinal = isOpp && o.stageId==="handoff";
+    const isClientFinal = !isOpp && !next;
+    let label, action;
+    if(isFinal){ label = "SEND TO FLOW"; action = "send-handoff"; }
+    else if(isClientFinal){ label = "MARK LIVE"; action = "mark-live"; }
+    else { label = "ADVANCE → "+stageName(next).toUpperCase(); action = "advance"; }
     return `<div class="ready-row">
       <div style="flex:1"><b>${esc(o.business)}</b> <span class="stage-arrow">· ${stageName(o.stageId)} gate clear</span></div>
       <span class="att-value mono">${money(o.value)}</span>
-      <button class="btn small primary" data-action="${isFinal?"send-handoff":"advance"}" data-id="${o.id}">${label} →</button>
+      <button class="btn small primary" data-action="${action}" data-type="${type}" data-id="${o.id}">${label} →</button>
     </div>`;
   }).join("") : `<div class="empty-state">NOTHING READY RIGHT NOW.</div>`;
 }
@@ -540,7 +678,7 @@ function dealCard(o){
   const a = analyzeStage(o);
   const critical = a.hasCritical;
   const badge = critical ? `<span class="pill critical">BLOCKED</span>` : a.allRequiredVerified ? `<span class="pill blue">READY</span>` : `<span class="pill neutral">IN PROGRESS</span>`;
-  return `<button class="deal-card ${critical?"state-critical":""}" data-action="open-deal" data-id="${o.id}">
+  return `<button class="deal-card ${critical?"state-critical":""}" data-action="open-deal" data-type="opportunity" data-id="${o.id}">
     <div class="biz">${esc(o.business)}</div>
     <div class="contact">${esc(o.contact)} · ${esc(o.source)}</div>
     <div class="foot"><span class="value mono">${money(o.value)}</span>${badge}</div>
@@ -549,43 +687,77 @@ function dealCard(o){
 }
 
 /* ---------------------------------------------------------- */
+/* ONBOARDING / CLIENTS PIPELINE                                 */
+/* ---------------------------------------------------------- */
+function renderOnboarding(){
+  const cols = ONB_STAGES.map(st=>{
+    const clis = STATE.clients.filter(c=>c.stageId===st.id && c.status==="active");
+    const value = clis.reduce((s,c)=>s+c.value,0);
+    return `<div class="stage-col">
+      <div class="stage-col-head"><b>${esc(st.name)}</b><div class="stage-meta"><span>${clis.length} OPEN</span><span>${money(value)}</span></div></div>
+      <div class="stage-col-body">${clis.map(c=>clientCard(c)).join("") || `<div class="empty-state" style="padding:16px 10px;">EMPTY</div>`}</div>
+    </div>`;
+  }).join("");
+  document.getElementById("pipeline-onb").innerHTML = cols;
+}
+function clientCard(c){
+  const a = analyzeStage(c);
+  const critical = a.hasCritical;
+  const badge = critical ? `<span class="pill critical">BLOCKED</span>` : a.allRequiredVerified ? `<span class="pill blue">READY</span>` : `<span class="pill neutral">IN PROGRESS</span>`;
+  return `<button class="deal-card ${critical?"state-critical":""}" data-action="open-deal" data-type="client" data-id="${c.id}">
+    <div class="biz">${esc(c.business)}</div>
+    <div class="contact">${esc(c.contact)}</div>
+    <div class="foot"><span class="value mono">${money(c.value)}</span>${badge}</div>
+    <div class="days">${daysInStage(c)}D IN STAGE</div>
+  </button>`;
+}
+
+/* ---------------------------------------------------------- */
 /* OPPORTUNITY DETAIL                                            */
 /* ---------------------------------------------------------- */
-function openDeal(id){
+function openDeal(id){ openRecordDialog(id, "opportunity"); }
+function openClient(id){ openRecordDialog(id, "client"); }
+function openRecordDialog(id, type){
   const dlg = document.getElementById("dealDialog");
-  renderDeal(id);
+  dlg.dataset.recordType = type;
+  renderRecordDetail(id, type);
   if(!dlg.open) dlg.showModal();
 }
-function renderDeal(id){
-  const o = getOpp(id);
+function renderDeal(id){ renderRecordDetail(id, "opportunity"); }
+function renderRecordDetail(id, type){
+  const o = getRecord(id, type);
   if(!o) return;
   const a = analyzeStage(o);
-  const order = STAGE_ORDER();
+  const stagesArr = stagesArrFor(o.stageId);
+  const order = stagesArr.map(s=>s.id);
   const stepIdx = order.indexOf(o.stageId);
+  const isOpp = type==="opportunity";
 
-  let stepper = STAGES.map((st,i)=>{
+  let stepper = stagesArr.map((st,i)=>{
     let cls = "";
-    if(o.status==="lost") cls = i<=stepIdx ? "lost" : "";
+    if(isOpp && o.status==="lost") cls = i<=stepIdx ? "lost" : "";
     else if(i<stepIdx) cls = "done";
     else if(i===stepIdx) cls = "current";
     return `<div class="step ${cls}"><div class="dot">${i<stepIdx?"✓":i+1}</div><div class="lbl">${esc(st.name)}</div></div>`;
   }).join("");
 
   let gateBanner = "";
-  if(o.status==="lost"){
+  if(isOpp && o.status==="lost"){
     gateBanner = `<div class="gate-banner blocked"><span class="g-icon mono">LOST</span><span>${esc(o.lostReason||"Marked lost.")}</span></div>`;
-  } else if(o.status==="handed_off"){
+  } else if(isOpp && o.status==="handed_off"){
     gateBanner = `<div class="handed-badge">✓ HANDED TO FLOW — IN DELIVERY</div>`;
+  } else if(!isOpp && o.status==="live"){
+    gateBanner = `<div class="handed-badge">✓ LIVE — ONBOARDING COMPLETE</div>`;
   } else if(a.hasCritical){
     gateBanner = `<div class="gate-banner blocked"><span class="g-icon mono">GATE BLOCKED</span><span>This stage can't advance until every critical item is resolved.</span></div>`;
   } else if(a.allRequiredVerified){
     gateBanner = `<div class="gate-banner ready"><span class="g-icon mono">GATE CLEAR</span><span>Every required item is verified. Ready to move.</span></div>`;
   }
 
-  const reqListHtml = a.items.map(({cfg,state})=>reqItemHtml(o,cfg,state)).join("");
+  const reqListHtml = a.items.map(({cfg,state})=>reqItemHtml(o,cfg,state,type)).join("");
 
   let handoffHtml = "";
-  if(o.stageId==="handoff" && o.status==="active"){
+  if(isOpp && o.stageId==="handoff" && o.status==="active"){
     handoffHtml = `<div class="handoff-box">
       <span class="kicker orange">HUNTER → FLOW</span><h4>HANDOFF PACKAGE</h4>
       <p>Flow can't start delivery until this checklist is complete. Tap an item to mark it done.</p>
@@ -601,12 +773,19 @@ function renderDeal(id){
   }
 
   let decisionHtml = "";
-  if(o.status==="active" && o.stageId!=="handoff"){
-    const isFinalGate = o.stageId==="contract";
-    decisionHtml = `<div class="decision-row">
-      <button class="btn primary" data-action="advance" data-id="${o.id}" ${a.allRequiredVerified?"":"disabled"}>${isFinalGate?"ADVANCE → HANDOFF TO FLOW":"ADVANCE → "+stageName(nextStageId(o.stageId)).toUpperCase()} →</button>
-      <button class="btn danger" data-action="mark-lost" data-id="${o.id}">MARK LOST</button>
-    </div>`;
+  if(o.status==="active" && !(isOpp && o.stageId==="handoff")){
+    const next = nextStageId(o.stageId);
+    if(!isOpp && !next){
+      decisionHtml = `<div class="decision-row">
+        <button class="btn primary" data-action="mark-live" data-type="client" data-id="${o.id}" ${a.allRequiredVerified?"":"disabled"}>MARK LIVE →</button>
+      </div>`;
+    } else if(next){
+      const isFinalGate = isOpp && o.stageId==="contract";
+      decisionHtml = `<div class="decision-row">
+        <button class="btn primary" data-action="advance" data-type="${type}" data-id="${o.id}" ${a.allRequiredVerified?"":"disabled"}>${isFinalGate?"ADVANCE → HANDOFF TO FLOW":"ADVANCE → "+stageName(next).toUpperCase()} →</button>
+        ${isOpp ? `<button class="btn danger" data-action="mark-lost" data-id="${o.id}">MARK LOST</button>` : ""}
+      </div>`;
+    }
   }
 
   const timelineHtml = o.activity.slice(0,12).map((ev,i)=>`
@@ -619,14 +798,16 @@ function renderDeal(id){
       </div>
     </div>`).join("");
 
+  const kicker = isOpp ? "HUNTER · OPPORTUNITY" : "FLOW · CLIENT";
+  const subFields = isOpp
+    ? `<span>CONTACT <b>${esc(o.contact)}</b></span><span>VALUE <b>${money(o.value)}</b></span><span>SOURCE <b>${esc(o.source)}</b></span><span>IN STAGE <b>${daysInStage(o)}D</b></span>`
+    : `<span>CONTACT <b>${esc(o.contact)}</b></span><span>VALUE <b>${money(o.value)}</b></span><span>IN STAGE <b>${daysInStage(o)}D</b></span>`;
+
   document.getElementById("dealPanel").innerHTML = `
     <div class="modalHead">
       <div>
-        <div class="deal-head"><div class="deal-head-left"><span class="kicker orange">HUNTER · OPPORTUNITY</span><h3>${esc(o.business)}</h3></div></div>
-        <div class="deal-sub">
-          <span>CONTACT <b>${esc(o.contact)}</b></span><span>VALUE <b>${money(o.value)}</b></span>
-          <span>SOURCE <b>${esc(o.source)}</b></span><span>IN STAGE <b>${daysInStage(o)}D</b></span>
-        </div>
+        <div class="deal-head"><div class="deal-head-left"><span class="kicker orange">${kicker}</span><h3>${esc(o.business)}</h3></div></div>
+        <div class="deal-sub">${subFields}</div>
       </div>
       <button type="button" class="x" data-close-dialog="dealDialog">×</button>
     </div>
@@ -640,29 +821,30 @@ function renderDeal(id){
       <div class="timeline">${timelineHtml}</div>
     </div>`;
 }
-function reqItemHtml(o,cfg,state){
+function reqItemHtml(o,cfg,state,type){
+  const t = type||"opportunity";
   const stateCls = state.status==="blocked" ? "state-blocked" : state.status==="submitted" ? "state-submitted" : state.status==="verified" ? "state-verified" : "";
   let body = "";
   if(state.status==="pending"){
     body = `<textarea class="ev-input" placeholder="Log what happened — call notes, doc link, number…" data-role="evidence-input"></textarea>
-      <div class="req-actions"><button class="btn small primary" data-action="submit-evidence" data-id="${o.id}" data-req="${cfg.id}">SUBMIT EVIDENCE →</button></div>`;
+      <div class="req-actions"><button class="btn small primary" data-action="submit-evidence" data-type="${t}" data-id="${o.id}" data-req="${cfg.id}">SUBMIT EVIDENCE →</button></div>`;
   } else if(state.status==="submitted"){
     body = `<div class="req-evidence">${esc(state.evidence||"")}</div>
       <div class="req-actions">
-        <button class="btn small ghost-blue" data-action="verify-req" data-id="${o.id}" data-req="${cfg.id}">✓ VERIFY</button>
+        <button class="btn small ghost-blue" data-action="verify-req" data-type="${t}" data-id="${o.id}" data-req="${cfg.id}">✓ VERIFY</button>
         <button class="btn small danger" data-action="show-flag" data-id="${o.id}" data-req="${cfg.id}">⚑ FLAG ISSUE</button>
       </div>
       <div class="flag-row" style="display:none" data-role="flag-row">
         <input placeholder="What's wrong with this evidence?" data-role="flag-input">
-        <button class="btn small danger" data-action="flag-req" data-id="${o.id}" data-req="${cfg.id}">CONFIRM</button>
+        <button class="btn small danger" data-action="flag-req" data-type="${t}" data-id="${o.id}" data-req="${cfg.id}">CONFIRM</button>
       </div>`;
   } else if(state.status==="verified"){
     body = `<div class="req-evidence">${esc(state.evidence||"")}</div>
       <div class="req-meta">✓ VERIFIED BY ${esc((state.verifiedBy||"").toUpperCase())} · ${relTime(state.verifiedAt)}</div>
-      <button class="reopen-link" data-action="reopen-req" data-id="${o.id}" data-req="${cfg.id}">reopen</button>`;
+      <button class="reopen-link" data-action="reopen-req" data-type="${t}" data-id="${o.id}" data-req="${cfg.id}">reopen</button>`;
   } else if(state.status==="blocked"){
     body = `<div class="req-evidence" style="border-left-color:var(--critical); color:var(--paper)">⚑ ${esc(state.blockedReason||"")}</div>
-      <div class="req-actions"><button class="btn small ghost-blue" data-action="resolve-req" data-id="${o.id}" data-req="${cfg.id}">MARK RESOLVED — BACK TO REVIEW</button></div>`;
+      <div class="req-actions"><button class="btn small ghost-blue" data-action="resolve-req" data-type="${t}" data-id="${o.id}" data-req="${cfg.id}">MARK RESOLVED — BACK TO REVIEW</button></div>`;
   }
   return `<div class="req-item ${stateCls}">
     <div class="req-top"><div class="req-title">${esc(cfg.label)} ${cfg.required?"":'<span class="dim-tag">OPTIONAL</span>'}</div><div class="req-dims">${dimTags(cfg.dims)}</div></div>
@@ -678,24 +860,25 @@ function renderQuality(){
   const dims = [["all","ALL"],["process","PROCESS"],["quality","QUALITY"],["growth","GROWTH"]];
   filters.innerHTML = dims.map(([id,l])=>`<button class="chip-filter ${STATE.ui.qDim===id?"active":""}" data-action="qfilter" data-dim="${id}">${l}</button>`).join("");
   let rows = [];
-  STATE.opportunities.filter(o=>o.status==="active").forEach(o=>{
+  activeRecords().forEach(o=>{
+    const type = STATE.clients.includes(o) ? "client" : "opportunity";
     stageReqs(o.stageId).forEach(cfg=>{
       const st = o.reqStatus[cfg.id];
       if(!st || st.status!=="submitted") return;
       if(STATE.ui.qDim!=="all" && !cfg.dims.includes(STATE.ui.qDim)) return;
-      rows.push({o,cfg,st});
+      rows.push({o,cfg,st,type});
     });
   });
-  document.getElementById("qualityView").innerHTML = rows.length ? rows.map(({o,cfg,st})=>`
+  document.getElementById("qualityView").innerHTML = rows.length ? rows.map(({o,cfg,st,type})=>`
     <div class="q-row">
       <div class="q-main">
-        <div class="att-top"><span class="att-biz">${esc(o.business)}</span>${dimTags(cfg.dims)}<span class="pill neutral">${stageName(o.stageId)}</span></div>
+        <div class="att-top"><span class="att-biz">${esc(o.business)}</span>${dimTags(cfg.dims)}<span class="pill neutral">${stageName(o.stageId)}</span><span class="pill neutral">${type==="client"?"ONBOARDING":"SALES"}</span></div>
         <div class="q-req">${esc(cfg.label)}</div>
         <div class="req-evidence" style="margin-top:8px; max-width:60ch;">${esc(st.evidence||"")}</div>
       </div>
       <div class="q-actions">
-        <button class="btn small ghost-blue" data-action="verify-req" data-id="${o.id}" data-req="${cfg.id}">✓ VERIFY</button>
-        <button class="btn small" data-action="open-deal" data-id="${o.id}">REVIEW IN DETAIL →</button>
+        <button class="btn small ghost-blue" data-action="verify-req" data-type="${type}" data-id="${o.id}" data-req="${cfg.id}">✓ VERIFY</button>
+        <button class="btn small" data-action="open-deal" data-type="${type}" data-id="${o.id}">REVIEW IN DETAIL →</button>
       </div>
     </div>`).join("") : `<div class="empty-state">QUEUE'S CLEAR. NOTHING WAITING ON VERIFICATION.</div>`;
 }
@@ -705,14 +888,20 @@ function renderQuality(){
 /* ---------------------------------------------------------- */
 function renderAdmin(){
   const el = document.getElementById("adminStages");
-  el.innerHTML = STAGES.map(st=>{
+  const block = (st)=>{
     const reqs = stageReqs(st.id);
     return `<div class="admin-stage-block">
       <div class="admin-stage-head"><h4>${esc(st.name)}</h4><span class="kicker">${reqs.length} REQUIREMENT${reqs.length===1?"":"S"}</span></div>
       ${reqs.map(r=>adminReqRow(st.id,r)).join("")}
       <div class="admin-add-row"><button class="btn small" data-action="add-req" data-stage="${st.id}">+ ADD REQUIREMENT</button></div>
     </div>`;
-  }).join("");
+  };
+  el.innerHTML = `
+    <div class="sectionTitle"><div><span class="kicker orange">SALES</span><h3 style="font-size:20px;">HUNTER WORKFLOW</h3></div></div>
+    ${STAGES.map(block).join("")}
+    <div class="sectionTitle" style="margin-top:30px;"><div><span class="kicker blue">ONBOARDING</span><h3 style="font-size:20px;">FLOW WORKFLOW</h3></div></div>
+    ${ONB_STAGES.map(block).join("")}
+  `;
 }
 function adminReqRow(stageId, r){
   return `<div class="admin-req-row" data-stage="${stageId}" data-req="${r.id}">
@@ -809,13 +998,14 @@ function handleRealtimeChange(){
     await refreshAll();
     if(STATE.ui.view!=="roadmap") showViewSilently(STATE.ui.view);
     const dlg = document.getElementById("dealDialog");
-    if(dlg.open){ const id = dlg.dataset.dealId; if(id && getOpp(id)) renderDeal(id); }
+    if(dlg.open){ const id = dlg.dataset.dealId; const type = dlg.dataset.recordType||"opportunity"; if(id && getRecord(id,type)) renderRecordDetail(id,type); }
   }, 300);
 }
 function showViewSilently(viewId){
   if(viewId==="command") renderCommand();
   if(viewId==="sales") renderSales();
   if(viewId==="quality") renderQuality();
+  if(viewId==="onboarding") renderOnboarding();
   if(viewId==="admin") renderAdmin();
   if(viewId==="team") renderTeam();
 }
@@ -823,6 +1013,8 @@ function subscribeRealtime(){
   realtimeChannel = sb.channel("engine-live")
     .on("postgres_changes", {event:"*", schema:"public", table:"opportunities"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"requirement_status"}, handleRealtimeChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"clients"}, handleRealtimeChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"client_requirement_status"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"activity_log"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"requirements"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"profiles"}, handleRealtimeChange)
@@ -840,7 +1032,7 @@ async function refreshAndRerender(){
   await refreshAll();
   showViewSilently(STATE.ui.view);
   const dlg = document.getElementById("dealDialog");
-  if(dlg.open){ const id = dlg.dataset.dealId; if(id) renderDeal(id); }
+  if(dlg.open){ const id = dlg.dataset.dealId; if(id) renderRecordDetail(id, dlg.dataset.recordType||"opportunity"); }
 }
 
 function wireEvents(){
@@ -895,22 +1087,35 @@ function wireEvents(){
     if(!t) return;
     const action = t.dataset.action;
 
+    const recType = t.dataset.type || "opportunity";
+    const isClientAction = recType === "client";
+
     if(action==="nav"){ showView(t.dataset.view); return; }
     if(action==="roadmap"){ renderRoadmap(t.dataset.label); return; }
     if(action==="open-new"){ document.getElementById("newDialog").showModal(); return; }
-    if(action==="open-deal"){ document.getElementById("dealDialog").dataset.dealId = t.dataset.id; openDeal(t.dataset.id); return; }
+    if(action==="open-deal"){
+      document.getElementById("dealDialog").dataset.dealId = t.dataset.id;
+      isClientAction ? openClient(t.dataset.id) : openDeal(t.dataset.id);
+      return;
+    }
 
     if(action==="submit-evidence"){
       const input = t.closest(".req-item").querySelector('[data-role="evidence-input"]');
       const text = (input && input.value.trim()) || "Marked complete — no notes added.";
-      await submitEvidence(t.dataset.id, t.dataset.req, text); return;
+      isClientAction ? await submitClientEvidence(t.dataset.id, t.dataset.req, text) : await submitEvidence(t.dataset.id, t.dataset.req, text);
+      return;
     }
-    if(action==="verify-req"){ await verifyReq(t.dataset.id, t.dataset.req); return; }
+    if(action==="verify-req"){ isClientAction ? await verifyClientReq(t.dataset.id, t.dataset.req) : await verifyReq(t.dataset.id, t.dataset.req); return; }
     if(action==="show-flag"){ t.closest(".req-item").querySelector('[data-role="flag-row"]').style.display="flex"; return; }
-    if(action==="flag-req"){ const input = t.closest(".req-item").querySelector('[data-role="flag-input"]'); await flagReq(t.dataset.id, t.dataset.req, input.value.trim()); return; }
-    if(action==="resolve-req" || action==="reopen-req"){ await resolveReq(t.dataset.id, t.dataset.req); return; }
+    if(action==="flag-req"){
+      const input = t.closest(".req-item").querySelector('[data-role="flag-input"]');
+      isClientAction ? await flagClientReq(t.dataset.id, t.dataset.req, input.value.trim()) : await flagReq(t.dataset.id, t.dataset.req, input.value.trim());
+      return;
+    }
+    if(action==="resolve-req" || action==="reopen-req"){ isClientAction ? await resolveClientReq(t.dataset.id, t.dataset.req) : await resolveReq(t.dataset.id, t.dataset.req); return; }
 
-    if(action==="advance"){ await advanceStage(t.dataset.id); return; }
+    if(action==="advance"){ isClientAction ? await advanceClientStage(t.dataset.id) : await advanceStage(t.dataset.id); return; }
+    if(action==="mark-live"){ await markClientLive(t.dataset.id); return; }
     if(action==="mark-lost"){ await markLost(t.dataset.id, "Marked lost from Command Center."); return; }
     if(action==="toggle-handoff"){ await toggleHandoff(t.dataset.id, t.dataset.req); return; }
     if(action==="send-handoff"){ await sendHandoff(t.dataset.id); return; }
