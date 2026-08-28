@@ -1997,8 +1997,8 @@ async function afterSignIn(session){
   document.getElementById("loginScreen").classList.add("hidden");
   document.getElementById("app").classList.remove("hidden");
   updateUserChrome();
-  await refreshAll();
   subscribeRealtime();
+  await refreshAll();
   showView(STATE.profile.role==="hunter" ? "sales" : "command");
 }
 function updateUserChrome(){
