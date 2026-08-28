@@ -154,6 +154,15 @@
       <div id="pipeline-cnt" class="pipeline"></div>
     </section>
 
+    <!-- PROSPECTING / SCOUT -->
+    <section id="view-prospecting" class="view">
+      <div class="pipeline-toolbar">
+        <span class="kicker scout">SCOUT — PROSPECTING</span>
+      </div>
+      <div id="prospectMetrics" class="metrics"></div>
+      <div id="prospectList"></div>
+    </section>
+
     <!-- REPORTING / MEASURE -->
     <section id="view-reporting" class="view">
       <div class="pipeline-toolbar">
@@ -170,6 +179,29 @@
         <div><span class="kicker cyan">EVIDENCE TRAIL</span><h3>RECENT ACTIVITY</h3></div>
       </div>
       <div id="reportFeed" class="report-feed"></div>
+    </section>
+
+    <!-- AUTOMATIONS / ATLAS -->
+    <section id="view-automations" class="view">
+      <div class="pipeline-toolbar">
+        <span class="kicker spark">ATLAS — AUTOMATION ENGINE</span>
+      </div>
+      <p style="color:var(--paper-dim);font-size:14.5px;max-width:70ch;margin-bottom:26px;">
+        Atlas is the layer underneath the workflow engine that acts on its own — no clicking required. Some of it is
+        built into the cross-workflow wiring itself; some of it is a configurable rule you can switch on or off below.
+        <b class="mono" style="color:var(--paper)">Note: these run whenever the app has data to refresh</b> — on load,
+        on realtime updates, and after any action — not on a separate server schedule.
+      </p>
+
+      <div class="sectionTitle">
+        <div><span class="kicker spark">CORE ENGINE</span><h3>SYSTEM AUTOMATIONS</h3></div>
+      </div>
+      <div id="systemAutomations"></div>
+
+      <div class="sectionTitle">
+        <div><span class="kicker spark">CONFIGURABLE</span><h3>RULES</h3></div>
+      </div>
+      <div id="ruleAutomations"></div>
     </section>
 
     <!-- QUALITY -->
@@ -267,6 +299,52 @@
       <label>EST. PRODUCTION COST ($)<input name="value" type="number" value="200" min="0" step="50"></label>
     </div>
     <button class="btn primary full" type="submit">CREATE CONTENT →</button>
+  </form>
+</dialog>
+
+<dialog id="newProspectDialog">
+  <div class="modalHead">
+    <div><span class="kicker scout">SCOUT</span><h3>NEW PROSPECT</h3></div>
+    <button type="button" class="x" data-close-dialog="newProspectDialog">×</button>
+  </div>
+  <form id="newProspectForm" class="modal-body">
+    <label>BUSINESS NAME<input name="business" required placeholder="e.g. Royal Oak Family Dentistry"></label>
+    <label>CONTACT<input name="contact" required placeholder="e.g. Dr. Sarah Kim"></label>
+    <div class="two">
+      <label>PHONE<input name="phone" type="tel" placeholder="(248) 555-0100"></label>
+      <label>EMAIL<input name="email" type="email" placeholder="sarah@example.com"></label>
+    </div>
+    <div class="two">
+      <label>WEBSITE<input name="website" type="url" placeholder="https://…"></label>
+      <label>SOURCE
+        <select name="source">
+          <option>Cold list</option><option>Referral</option><option>Web research</option><option>Networking</option><option>Social</option>
+        </select>
+      </label>
+    </div>
+    <label>NOTES<textarea name="notes" placeholder="Why this prospect, what we know so far…"></textarea></label>
+    <button class="btn primary full" type="submit">ADD PROSPECT — START CADENCE →</button>
+  </form>
+</dialog>
+
+<dialog id="prospectDialog"><div id="prospectPanel"></div></dialog>
+
+<dialog id="competitorDialog">
+  <div class="modalHead">
+    <div><span class="kicker" style="color:var(--paper-dim)">MARKET INTEL</span><h3>ADD COMPETITOR</h3></div>
+    <button type="button" class="x" data-close-dialog="competitorDialog">×</button>
+  </div>
+  <form id="competitorForm" class="modal-body">
+    <label>COMPETITOR NAME<input name="name" required placeholder="e.g. Anytime Fitness Clinton Twp"></label>
+    <label>WEBSITE<input name="website" type="url" placeholder="https://…"></label>
+    <label>PRICING NOTES<textarea name="pricingNotes" placeholder="e.g. $29.99/mo, no contract"></textarea></label>
+    <div class="two">
+      <label>STRENGTHS<textarea name="strengths" placeholder="What they do well"></textarea></label>
+      <label>WEAKNESSES<textarea name="weaknesses" placeholder="Where they fall short"></textarea></label>
+    </div>
+    <label>OUR DIFFERENTIATION ANGLE<textarea name="angle" placeholder="How we position against them"></textarea></label>
+    <label>SOURCE / NOTES<textarea name="sourceNotes" placeholder="Where this research came from"></textarea></label>
+    <button class="btn primary full" type="submit">SAVE COMPETITOR →</button>
   </form>
 </dialog>
 
