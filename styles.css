@@ -38,6 +38,12 @@
   --cyan:      #3ED9D0;
   --cyan-soft: rgba(62,217,208,0.16);
 
+  --spark:      #FFD23F;
+  --spark-soft: rgba(255,210,63,0.16);
+
+  --scout:      #6C8CFF;
+  --scout-soft: rgba(108,140,255,0.16);
+
   --font-display: 'Anton', 'Arial Narrow', Impact, sans-serif;
   --font-body:    'Barlow Condensed', 'Arial Narrow', Arial, sans-serif;
   --font-mono:    'JetBrains Mono', 'SF Mono', Consolas, monospace;
@@ -90,6 +96,7 @@ p{ margin:0; }
 
 button{ font-family:inherit; cursor:pointer; }
 input,select,textarea{ font-family:inherit; }
+.hidden{ display:none; }
 
 .kicker{
   font-family:var(--font-mono);
@@ -114,6 +121,8 @@ input,select,textarea{ font-family:inherit; }
 .kicker.nitro{ color:var(--nitro); }
 .kicker.violet{ color:var(--violet); }
 .kicker.cyan{ color:var(--cyan); }
+.kicker.spark{ color:var(--spark); }
+.kicker.scout{ color:var(--scout); }
 .kicker.critical{ color:var(--critical); }
 
 .mono{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
@@ -328,6 +337,51 @@ header.pagehead h1{ font-size:clamp(30px,4vw,44px); margin-top:8px; }
 .feed-biz{ font-weight:600; }
 .feed-action{ color:var(--paper-dim); }
 .feed-actor{ margin-left:auto; color:var(--paper-faint); font-size:11px; text-transform:uppercase; }
+
+/* ---------------- automations ---------------- */
+.automation-card{ border:1px solid var(--line); border-radius:var(--radius); margin-bottom:16px; background:var(--ink-2); padding:18px 20px; }
+.automation-head{ display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; }
+.automation-name{ font-size:19px; font-family:var(--font-body); font-weight:600; }
+.automation-desc{ color:var(--paper-dim); font-size:14px; max-width:70ch; margin-top:8px; line-height:1.5; }
+.automation-meta{ display:flex; align-items:center; gap:16px; margin-top:14px; flex-wrap:wrap; }
+.automation-stat{ font-family:var(--font-mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--paper-faint); }
+.automation-stat b{ color:var(--paper); font-size:13px; }
+.automation-config{ display:flex; align-items:center; gap:8px; margin-top:14px; }
+.automation-config input{
+  width:110px; background:var(--ink-3); border:1px solid var(--line); border-radius:var(--radius);
+  color:var(--paper); padding:.6em .8em; font-size:14px; font-family:var(--font-mono);
+}
+.pill.spark{ border-color:var(--spark); color:var(--spark); background:var(--spark-soft); }
+
+/* ---------------- competitive analysis ---------------- */
+.competitor-list{ margin-bottom:10px; }
+.competitor-card{ border:1px solid var(--line); border-radius:var(--radius); background:var(--ink-2); padding:14px 16px; margin-bottom:12px; }
+.competitor-head{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.competitor-name{ font-weight:600; font-size:15px; }
+.competitor-link{ color:var(--signal); text-decoration:none; margin-left:4px; }
+.competitor-head .del{ background:none; border:none; color:var(--paper-faint); font-size:16px; cursor:pointer; }
+.competitor-head .del:hover{ color:var(--critical); }
+.competitor-field{ font-size:13.5px; color:var(--paper-dim); margin-top:6px; line-height:1.5; }
+.competitor-field b{ color:var(--paper-faint); font-family:var(--font-mono); font-size:10px; letter-spacing:.06em; margin-right:6px; }
+.competitor-source{ font-size:12px; color:var(--paper-faint); margin-top:8px; font-style:italic; }
+
+/* ---------------- prospecting / scout ---------------- */
+.pill.scout{ border-color:var(--scout); color:var(--scout); background:var(--scout-soft); }
+.mini-input{
+  background:var(--ink-3); border:1px solid var(--line); border-radius:var(--radius);
+  color:var(--paper); padding:.6em .8em; font-size:14px; font-family:var(--font-mono);
+}
+.prospect-card{ display:flex; align-items:center; justify-content:space-between; gap:16px; background:var(--ink-2); border:1px solid var(--line); border-radius:var(--radius); padding:16px 18px; margin-bottom:12px; flex-wrap:wrap; }
+.prospect-sub{ color:var(--paper-dim); font-size:13.5px; margin-top:6px; }
+.prospect-side{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.touch-list{ margin:14px 0; }
+.touch-item{ display:flex; align-items:flex-start; justify-content:space-between; gap:14px; background:var(--ink-3); border:1px solid var(--line); border-left:3px solid var(--line); border-radius:var(--radius); padding:14px 16px; margin-bottom:10px; flex-wrap:wrap; }
+.touch-item.touch-done{ border-left-color:var(--paper-faint); opacity:.72; }
+.touch-item.touch-overdue{ border-left-color:var(--critical); }
+.touch-due{ font-family:var(--font-mono); font-size:11px; color:var(--paper-dim); text-transform:uppercase; letter-spacing:.05em; }
+.touch-meta{ font-size:12px; color:var(--paper-faint); margin-top:6px; }
+.touch-notes{ font-size:13px; color:var(--paper-dim); margin-top:6px; }
+.touch-actions{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 
 /* ---------------- attention cards ---------------- */
 .attention{ display:flex; flex-direction:column; gap:10px; }
