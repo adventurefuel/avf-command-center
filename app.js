@@ -1436,12 +1436,15 @@ function renderReporting(){
       });
     });
     const compliance = judged ? Math.round((verified/judged)*100) : 100;
-    return {...wf, activeCount:active.length, activeValue, avgDays, compliance};
+    return {...wf, activeCount:active.length, activeValue, avgDays, compliance, judged, verified};
   });
 
   const totalActiveValue = rows.reduce((s,r)=>s+r.activeValue,0);
   const totalActiveCount = rows.reduce((s,r)=>s+r.activeCount,0);
   const totalCompleted = rows.reduce((s,r)=>s+r.completedCount,0);
+  const totalJudged = rows.reduce((s,r)=>s+r.judged,0);
+  const totalVerified = rows.reduce((s,r)=>s+r.verified,0);
+  const overallCompliance = totalJudged ? Math.round((totalVerified/totalJudged)*100) : 100;
 
   const feed = globalActivityFeed(60);
   const now = new Date();
@@ -1450,7 +1453,7 @@ function renderReporting(){
   document.getElementById("reportMetrics").innerHTML = `
     ${metricTile(totalActiveCount,"Active Records — All Workflows")}
     ${metricTile(money(totalActiveValue),"Total Active Pipeline Value")}
-    ${metricTile(g.score+"%","Overall SOP Compliance", g.score<75?"info":"")}
+    ${metricTile(overallCompliance+"%","Overall SOP Compliance", overallCompliance<75?"info":"")}
     ${metricTile(totalCompleted,"Completed All-Time")}
     ${metricTile(completedThisMonth,"Completed This Month")}
     ${metricTile(g.critical,"Critical Gates Open", g.critical?"bad":"")}
