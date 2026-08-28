@@ -146,6 +146,14 @@
       <div id="pipeline-cmp" class="pipeline"></div>
     </section>
 
+    <!-- CONTENT / CRAFT -->
+    <section id="view-content" class="view">
+      <div class="pipeline-toolbar">
+        <span class="kicker violet">CRAFT — CONTENT WORKFLOW</span>
+      </div>
+      <div id="pipeline-cnt" class="pipeline"></div>
+    </section>
+
     <!-- QUALITY -->
     <section id="view-quality" class="view">
       <div class="q-filters" id="qFilters"></div>
@@ -221,6 +229,26 @@
       <label>BUDGET ($)<input name="value" type="number" value="1500" min="0" step="100"></label>
     </div>
     <button class="btn primary full" type="submit">CREATE CAMPAIGN →</button>
+  </form>
+</dialog>
+
+<dialog id="newContentDialog">
+  <div class="modalHead">
+    <div><span class="kicker violet">CRAFT</span><h3>NEW CONTENT</h3></div>
+    <button type="button" class="x" data-close-dialog="newContentDialog">×</button>
+  </div>
+  <form id="newContentForm" class="modal-body">
+    <label>TITLE<input name="business" required placeholder="e.g. 5 Signs Your HVAC Needs a Tune-Up (blog)"></label>
+    <label>OWNER<input name="contact" required placeholder="e.g. Dana Reyes"></label>
+    <div class="two">
+      <label>LINKED CLIENT ACCOUNT
+        <select name="account_id" id="contentAccountSelect">
+          <option value="">— none —</option>
+        </select>
+      </label>
+      <label>EST. PRODUCTION COST ($)<input name="value" type="number" value="200" min="0" step="50"></label>
+    </div>
+    <button class="btn primary full" type="submit">CREATE CONTENT →</button>
   </form>
 </dialog>
 
