@@ -101,6 +101,7 @@ input,select,textarea{ font-family:inherit; }
 }
 .kicker.orange{ color:var(--fuel); }
 .kicker.blue{ color:var(--signal); }
+.kicker.amber{ color:var(--amber); }
 .kicker.critical{ color:var(--critical); }
 
 .mono{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
