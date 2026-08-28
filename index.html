@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Adventure Fuel Command Center</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Barlow+Condensed:ital,wght@0,400;0,500;0,600;0,700;1,600&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+</head>
+<body>
+
+<!-- initial load veil -->
+<div class="loading-veil" id="loadingVeil">
+  <img src="assets/logo-sm.png" style="width:48px;opacity:.85;" alt="">
+  <div class="spinner"></div>
+  <div class="kicker">CONNECTING TO ADVENTURE FUEL OS…</div>
+</div>
+
+<!-- ============================================================
+     AUTH GATE — real Supabase sign in / sign up
+     ============================================================ -->
+<div id="loginScreen" class="hidden">
+  <div class="login-card">
+    <img class="logo-hero" src="assets/logo-lg.png" alt="Adventure Fuel">
+    <div class="login-eyebrow">Command Center — Internal Operating System</div>
+    <h1 id="authHeadline">WHO'S <em>RUNNING</em><br>THE FLOOR?</h1>
+    <p class="login-tagline">We don't sell marketing. We build customer&nbsp;acquisition systems.</p>
+
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-tab="signin">SIGN IN</button>
+      <button class="auth-tab" data-tab="signup">CREATE ACCOUNT</button>
+    </div>
+
+    <div class="auth-error" id="authError"></div>
+    <div class="auth-notice" id="authNotice"></div>
+
+    <form class="auth-form" id="signinForm">
+      <label>EMAIL<input type="email" name="email" required autocomplete="email"></label>
+      <label>PASSWORD<input type="password" name="password" required autocomplete="current-password"></label>
+      <button class="btn primary full" type="submit">SIGN IN →</button>
+    </form>
+
+    <form class="auth-form hidden" id="signupForm">
+      <label>YOUR NAME<input type="text" name="full_name" required autocomplete="name"></label>
+      <label>EMAIL<input type="email" name="email" required autocomplete="email"></label>
+      <label>PASSWORD (min. 6 characters)<input type="password" name="password" required minlength="6" autocomplete="new-password"></label>
+      <button class="btn primary full" type="submit">CREATE ACCOUNT →</button>
+    </form>
+
+    <div class="login-foot">ADVENTURE FUEL OS &nbsp;·&nbsp; V1 COMMAND CENTER &nbsp;·&nbsp; LIVE ON SUPABASE</div>
+  </div>
+</div>
+
+<!-- ============================================================
+     APP SHELL
+     ============================================================ -->
+<div id="app" class="hidden">
+  <aside>
+    <div class="side-logo">
+      <img src="assets/logo-sm.png" alt="">
+      <div><b>ADVENTURE FUEL</b><small>OPERATING SYSTEM</small></div>
+    </div>
+    <nav id="nav"></nav>
+    <div class="side-foot">
+      <div id="connBadge" class="live"><span class="live-dot"></span><span>LIVE</span></div>
+      <div class="user-row" style="margin-top:10px;">
+        <div class="user-id">
+          <div class="user-badge" id="userInitial">–</div>
+          <div>
+            <div class="user-name" id="userName">–</div>
+            <div class="user-role" id="userRoleLabel">–</div>
+          </div>
+        </div>
+        <button class="signout" id="signOutBtn" title="Sign out">⏻</button>
+      </div>
+    </div>
+  </aside>
+
+  <main>
+    <header class="pagehead">
+      <div><span class="kicker" id="pageKicker">ADVENTURE FUEL OS</span><h1 id="pageTitle">COMMAND CENTER</h1></div>
+      <div class="pagehead-actions" id="pageActions"></div>
+    </header>
+
+    <!-- COMMAND CENTER -->
+    <section id="view-command" class="view">
+      <div class="hero">
+        <div>
+          <span class="kicker blue">TODAY'S SIGNAL</span>
+          <h2>WHAT NEEDS<br>ATTENTION?</h2>
+          <p>The system filters the noise. You handle the decisions. Everything verified and on track stays out of your way.</p>
+        </div>
+        <div class="gauge-wrap" id="heroGauge"></div>
+      </div>
+      <div id="metrics" class="metrics"></div>
+
+      <div class="sectionTitle">
+        <div><span class="kicker critical" id="critKicker">CRITICAL</span><h3>NEEDS YOUR ATTENTION</h3></div>
+      </div>
+      <div id="attention" class="attention"></div>
+
+      <div class="sectionTitle">
+        <div><span class="kicker blue">SYSTEM INTELLIGENCE</span><h3>AWAITING YOUR VERIFICATION</h3></div>
+      </div>
+      <div id="verifyQueue" class="attention"></div>
+
+      <div class="sectionTitle">
+        <div><span class="kicker orange">MOVING</span><h3>READY TO ADVANCE</h3></div>
+      </div>
+      <div id="readyList"></div>
+    </section>
+
+    <!-- SALES / HUNTER -->
+    <section id="view-sales" class="view">
+      <div class="pipeline-toolbar">
+        <span class="kicker orange">HUNTER — SALES WORKFLOW</span>
+        <input id="search" class="search-input" placeholder="Search opportunities…">
+      </div>
+      <div id="pipeline" class="pipeline"></div>
+    </section>
+
+    <!-- QUALITY -->
+    <section id="view-quality" class="view">
+      <div class="q-filters" id="qFilters"></div>
+      <div id="qualityView"></div>
+    </section>
+
+    <!-- ADMIN: SOP GATES -->
+    <section id="view-admin" class="view">
+      <p style="color:var(--paper-dim);font-size:14.5px;max-width:70ch;margin-bottom:26px;">
+        This is the engine, not a Sales-only screen. Every requirement below is a configurable gate on the
+        <b class="mono" style="color:var(--paper)">WORKFLOW → STAGE → REQUIREMENT</b> chain — change it here and every open
+        opportunity inherits the new gate immediately, for everyone signed in. No developer required.
+      </p>
+      <div id="adminStages"></div>
+    </section>
+
+    <!-- ADMIN: TEAM -->
+    <section id="view-team" class="view">
+      <p style="color:var(--paper-dim);font-size:14.5px;max-width:70ch;margin-bottom:26px;">
+        Everyone who's created an account. The first person to sign up became Admin automatically — promote or
+        change anyone else's seat below.
+      </p>
+      <div id="teamList" style="background:var(--ink-2);border:1px solid var(--line);border-radius:var(--radius);"></div>
+    </section>
+
+    <!-- ROADMAP (V2 / V3 locked views share this renderer) -->
+    <section id="view-roadmap" class="view">
+      <div class="roadmap-teaser" id="roadmapContent"></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ============================================================
+     DIALOGS
+     ============================================================ -->
+<dialog id="dealDialog"><div id="dealPanel"></div></dialog>
+
+<dialog id="newDialog">
+  <div class="modalHead">
+    <div><span class="kicker orange">HUNTER</span><h3>NEW OPPORTUNITY</h3></div>
+    <button type="button" class="x" data-close-dialog="newDialog">×</button>
+  </div>
+  <form id="newForm" class="modal-body">
+    <label>BUSINESS NAME<input name="business" required placeholder="e.g. Motor City Detailing"></label>
+    <label>PRIMARY CONTACT<input name="contact" required placeholder="e.g. Dana Reyes"></label>
+    <div class="two">
+      <label>LEAD SOURCE
+        <select name="source">
+          <option>Referral</option><option>Outbound</option><option>Website</option><option>Networking</option><option>Social</option>
+        </select>
+      </label>
+      <label>ESTIMATED VALUE ($)<input name="value" type="number" value="3000" min="0" step="100"></label>
+    </div>
+    <button class="btn primary full" type="submit">CREATE OPPORTUNITY →</button>
+  </form>
+</dialog>
+
+<div id="toastHost"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
