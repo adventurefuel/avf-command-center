@@ -61,6 +61,8 @@ let STATE = {
   accounts:[],
   campaigns:[],
   content:[],
+  prospects:[],
+  automationRules:{},             // key -> {label,description,enabled,config}
   ui:{ view:"command", qDim:"all", search:"" }
 };
 const ALL_STAGE_ARRS = () => [STAGES, ONB_STAGES, ACC_STAGES, CMP_STAGES, CNT_STAGES];
@@ -72,6 +74,7 @@ function getClient(id){ return STATE.clients.find(c=>c.id===id); }
 function getAccount(id){ return STATE.accounts.find(a=>a.id===id); }
 function getCampaign(id){ return STATE.campaigns.find(c=>c.id===id); }
 function getContent(id){ return STATE.content.find(c=>c.id===id); }
+function getProspect(id){ return STATE.prospects.find(p=>p.id===id); }
 function getRecord(id, type){ return type==="account" ? getAccount(id) : type==="client" ? getClient(id) : type==="campaign" ? getCampaign(id) : type==="content" ? getContent(id) : getOpp(id); }
 function reqConfig(stageId, reqId){ return (STATE.requirements[stageId]||[]).find(r=>r.id===reqId); }
 function stageReqs(stageId){ return STATE.requirements[stageId]||[]; }
@@ -111,9 +114,17 @@ async function loadProfiles(){
   STATE.profiles = map;
 }
 
+function mapCompetitorRows(rows){
+  return (rows||[]).map(c=>({
+    id:c.id, name:c.name, website:c.website, pricingNotes:c.pricing_notes,
+    strengths:c.strengths, weaknesses:c.weaknesses, angle:c.differentiation_angle,
+    sourceNotes:c.source_notes, createdAt:new Date(c.created_at).getTime()
+  })).sort((a,b)=>b.createdAt-a.createdAt);
+}
+
 async function loadOpportunities(){
   const {data, error} = await sb.from("opportunities")
-    .select("*, requirement_status(*), activity_log(*)")
+    .select("*, requirement_status(*), activity_log(*), competitors(*)")
     .order("created_at", {ascending:false});
   if(error){ console.error(error); toast("Couldn't load opportunities.", "orange"); return; }
   STATE.opportunities = (data||[]).map(o=>{
@@ -134,14 +145,14 @@ async function loadOpportunities(){
     return {
       id:o.id, business:o.business, contact:o.contact, source:o.source, value:Number(o.value),
       stageId:o.stage_id, stageEnteredAt:new Date(o.stage_entered_at).getTime(), createdAt:new Date(o.created_at).getTime(),
-      status:o.status, lostReason:o.lost_reason, reqStatus, activity
+      status:o.status, lostReason:o.lost_reason, reqStatus, activity, competitors:mapCompetitorRows(o.competitors)
     };
   });
 }
 
 async function loadClients(){
   const {data, error} = await sb.from("clients")
-    .select("*, client_requirement_status(*), activity_log(*)")
+    .select("*, client_requirement_status(*), activity_log(*), competitors(*)")
     .order("created_at", {ascending:false});
   if(error){ console.error(error); toast("Couldn't load onboarding clients.", "orange"); return; }
   STATE.clients = (data||[]).map(c=>{
@@ -162,14 +173,14 @@ async function loadClients(){
     return {
       id:c.id, business:c.business, contact:c.contact, value:Number(c.value),
       stageId:c.stage_id, stageEnteredAt:new Date(c.stage_entered_at).getTime(), createdAt:new Date(c.created_at).getTime(),
-      status:c.status, sourceOpportunityId:c.source_opportunity_id, reqStatus, activity
+      status:c.status, sourceOpportunityId:c.source_opportunity_id, reqStatus, activity, competitors:mapCompetitorRows(c.competitors)
     };
   });
 }
 
 async function loadAccounts(){
   const {data, error} = await sb.from("accounts")
-    .select("*, account_requirement_status(*), activity_log(*)")
+    .select("*, account_requirement_status(*), activity_log(*), competitors(*)")
     .order("created_at", {ascending:false});
   if(error){ console.error(error); toast("Couldn't load client accounts.", "orange"); return; }
   STATE.accounts = (data||[]).map(a=>{
@@ -190,14 +201,14 @@ async function loadAccounts(){
     return {
       id:a.id, business:a.business, contact:a.contact, value:Number(a.value),
       stageId:a.stage_id, stageEnteredAt:new Date(a.stage_entered_at).getTime(), createdAt:new Date(a.created_at).getTime(),
-      status:a.status, cycleNumber:a.cycle_number, sourceClientId:a.source_client_id, reqStatus, activity
+      status:a.status, cycleNumber:a.cycle_number, sourceClientId:a.source_client_id, reqStatus, activity, competitors:mapCompetitorRows(a.competitors)
     };
   });
 }
 
 async function loadCampaigns(){
   const {data, error} = await sb.from("campaigns")
-    .select("*, campaign_requirement_status(*), activity_log(*), accounts(business)")
+    .select("*, campaign_requirement_status(*), activity_log(*), accounts(business), competitors(*)")
     .order("created_at", {ascending:false});
   if(error){ console.error(error); toast("Couldn't load campaigns.", "orange"); return; }
   STATE.campaigns = (data||[]).map(c=>{
@@ -218,14 +229,14 @@ async function loadCampaigns(){
     return {
       id:c.id, business:c.business, contact:c.contact, value:Number(c.value),
       stageId:c.stage_id, stageEnteredAt:new Date(c.stage_entered_at).getTime(), createdAt:new Date(c.created_at).getTime(),
-      status:c.status, accountId:c.account_id, accountName:c.accounts?c.accounts.business:null, reqStatus, activity
+      status:c.status, accountId:c.account_id, accountName:c.accounts?c.accounts.business:null, reqStatus, activity, competitors:mapCompetitorRows(c.competitors)
     };
   });
 }
 
 async function loadContent(){
   const {data, error} = await sb.from("content_items")
-    .select("*, content_requirement_status(*), activity_log(*), accounts(business)")
+    .select("*, content_requirement_status(*), activity_log(*), accounts(business), competitors(*)")
     .order("created_at", {ascending:false});
   if(error){ console.error(error); toast("Couldn't load content.", "orange"); return; }
   STATE.content = (data||[]).map(c=>{
@@ -246,9 +257,38 @@ async function loadContent(){
     return {
       id:c.id, business:c.business, contact:c.contact, value:Number(c.value),
       stageId:c.stage_id, stageEnteredAt:new Date(c.stage_entered_at).getTime(), createdAt:new Date(c.created_at).getTime(),
-      status:c.status, accountId:c.account_id, accountName:c.accounts?c.accounts.business:null, reqStatus, activity
+      status:c.status, accountId:c.account_id, accountName:c.accounts?c.accounts.business:null, reqStatus, activity, competitors:mapCompetitorRows(c.competitors)
     };
   });
+}
+
+async function loadProspects(){
+  const {data, error} = await sb.from("prospects")
+    .select("*, prospect_touches(*)")
+    .order("created_at", {ascending:false});
+  if(error){ console.error(error); toast("Couldn't load prospects.", "orange"); return; }
+  STATE.prospects = (data||[]).map(p=>{
+    const touches = (p.prospect_touches||[]).map(t=>({
+      id:t.id, seq:t.seq, channel:t.channel, label:t.label, dueDate:t.due_date,
+      completedAt: t.completed_at ? new Date(t.completed_at).getTime() : null,
+      completedBy: t.completed_by ? (STATE.profiles[t.completed_by]||{}).fullName || "a teammate" : null,
+      notes: t.notes || ""
+    })).sort((a,b)=>a.seq-b.seq);
+    return {
+      id:p.id, business:p.business, contact:p.contact, phone:p.phone, email:p.email, website:p.website,
+      notes:p.notes||"", source:p.source||"", status:p.status,
+      convertedOpportunityId:p.converted_opportunity_id,
+      createdAt:new Date(p.created_at).getTime(), touches
+    };
+  });
+}
+
+async function loadAutomationRules(){
+  const {data, error} = await sb.from("automation_rules").select("*");
+  if(error){ console.error(error); return; }
+  const map = {};
+  (data||[]).forEach(r=>{ map[r.key] = {label:r.label, description:r.description, enabled:r.enabled, config:r.config||{}}; });
+  STATE.automationRules = map;
 }
 
 async function refreshAll(){
@@ -259,6 +299,9 @@ async function refreshAll(){
   await loadAccounts();
   await loadCampaigns();
   await loadContent();
+  await loadProspects();
+  await loadAutomationRules();
+  await runAutomations();
 }
 
 /* ---------------------------------------------------------- */
@@ -398,6 +441,11 @@ async function createOpportunity(fields){
   if(error){ toast("Couldn't create that opportunity.", "orange"); return; }
   await ensureReqRows(stageId, data.id);
   await logActivity(data.id, "Opportunity created", "Source: "+fields.source);
+  const flagRule = STATE.automationRules.high_value_flag;
+  const threshold = flagRule ? (Number(flagRule.config.threshold) || 5000) : null;
+  if(flagRule && flagRule.enabled && Number(fields.value) >= threshold){
+    await logAutomationActivity("opportunity", data.id, "Flagged as high-value", "Auto-flagged by Atlas — at or above the $"+threshold.toLocaleString()+" threshold.");
+  }
   toast("Opportunity created.");
   await refreshAndRerender();
 }
@@ -814,6 +862,154 @@ function activeRecords(){
     ...STATE.content.filter(c=>c.status==="active").map(o=>({o, type:"content"}))
   ];
 }
+
+/* ---------------------------------------------------------- */
+/* AUTOMATIONS — ATLAS                                           */
+/* ---------------------------------------------------------- */
+const ACTIVITY_FK_COL = {opportunity:"opportunity_id", client:"client_id", account:"account_id", campaign:"campaign_id", content:"content_id"};
+
+/* ---------------------------------------------------------- */
+/* COMPETITIVE ANALYSIS                                          */
+/* ---------------------------------------------------------- */
+const COMPETITOR_FK_COL = ACTIVITY_FK_COL;
+async function addCompetitor(type, id, fields){
+  const col = COMPETITOR_FK_COL[type];
+  if(!col) return;
+  const {error} = await sb.from("competitors").insert({
+    [col]: id, name: fields.name,
+    website: fields.website || null,
+    pricing_notes: fields.pricingNotes || null,
+    strengths: fields.strengths || null,
+    weaknesses: fields.weaknesses || null,
+    differentiation_angle: fields.angle || null,
+    source_notes: fields.sourceNotes || null,
+    created_by: STATE.session.user.id
+  });
+  if(error){ toast("Couldn't save that competitor.", "orange"); return; }
+  toast("Competitor added.");
+  await refreshAndRerender();
+}
+async function deleteCompetitor(competitorId){
+  const {error} = await sb.from("competitors").delete().eq("id", competitorId);
+  if(error){ toast("Couldn't remove that.", "orange"); return; }
+  toast("Competitor removed.");
+  await refreshAndRerender();
+}
+async function logAutomationActivity(type, id, action, detail){
+  const col = ACTIVITY_FK_COL[type];
+  if(!col || !STATE.session) return;
+  // actor_id is intentionally left null — Atlas isn't acting as whichever signed-in
+  // user's browser happened to trigger the refresh, and this keeps automation-authored
+  // rows from being tangled up with any one person's account.
+  await sb.from("activity_log").insert({
+    [col]: id, actor_id: null, actor_name: "Atlas (Automation)",
+    action, detail: detail || null
+  });
+}
+async function runAutomations(){
+  if(!STATE.session) return;
+  const staleRule = STATE.automationRules.stale_gate_escalation;
+  if(staleRule && staleRule.enabled){
+    for(const {o, type} of activeRecords()){
+      const days = daysInStage(o);
+      for(const cfg of stageReqs(o.stageId)){
+        if(!cfg.required) continue;
+        const st = o.reqStatus[cfg.id] || {status:"pending"};
+        const isOverdue = st.status !== "verified" && st.status !== "blocked" && days > cfg.thresholdDays;
+        if(!isOverdue) continue;
+        const already = (o.activity||[]).some(ev=>ev.action==="Escalated: "+cfg.label);
+        if(already) continue;
+        await logAutomationActivity(type, o.id, "Escalated: "+cfg.label, "Auto-flagged by Atlas — "+days+"d in stage, "+cfg.thresholdDays+"d gate. No evidence yet.");
+      }
+    }
+  }
+}
+function automationFiredCount(prefix){
+  return globalActivityFeed().filter(a=>a.action && a.action.startsWith(prefix) && a.actor==="Atlas (Automation)").length;
+}
+
+/* ---------------------------------------------------------- */
+/* PROSPECTING — SCOUT                                           */
+/* ---------------------------------------------------------- */
+function defaultCadence(){
+  const addDays = (n)=>{ const d = new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
+  return [
+    {seq:1, channel:"call",  label:"Call 1",  due_date: addDays(0)},
+    {seq:2, channel:"email", label:"Email 1", due_date: addDays(2)},
+    {seq:3, channel:"call",  label:"Call 2",  due_date: addDays(5)},
+    {seq:4, channel:"email", label:"Email 2", due_date: addDays(9)}
+  ];
+}
+async function createProspect(fields){
+  const {data, error} = await sb.from("prospects").insert({
+    business: fields.business, contact: fields.contact,
+    phone: fields.phone || null, email: fields.email || null, website: fields.website || null,
+    notes: fields.notes || null, source: fields.source || null, created_by: STATE.session.user.id
+  }).select().single();
+  if(error){ toast("Couldn't create that prospect.", "orange"); return; }
+  const touches = defaultCadence().map(t=>({...t, prospect_id:data.id}));
+  const {error: touchErr} = await sb.from("prospect_touches").insert(touches);
+  if(touchErr){ toast("Prospect created, but the cadence couldn't be started.", "orange"); }
+  else { toast("Prospect added — outreach cadence started."); }
+  await refreshAndRerender();
+}
+async function completeTouch(touchId, notes){
+  const {error} = await sb.from("prospect_touches").update({
+    completed_at: new Date().toISOString(), completed_by: STATE.session.user.id, notes: notes || null
+  }).eq("id", touchId);
+  if(error){ toast("Couldn't update that.", "orange"); return; }
+  toast("Touch marked complete.");
+  await refreshAndRerender();
+}
+async function reopenTouch(touchId){
+  const {error} = await sb.from("prospect_touches").update({completed_at:null, completed_by:null}).eq("id", touchId);
+  if(error){ toast("Couldn't update that.", "orange"); return; }
+  toast("Reopened.");
+  await refreshAndRerender();
+}
+async function addTouch(prospectId, channel, label, dueDate){
+  const p = getProspect(prospectId);
+  if(!p || !label || !dueDate) return;
+  const nextSeq = p.touches.length ? Math.max(...p.touches.map(t=>t.seq))+1 : 1;
+  const {error} = await sb.from("prospect_touches").insert({
+    prospect_id: prospectId, seq: nextSeq, channel, label, due_date: dueDate
+  });
+  if(error){ toast("Couldn't add that.", "orange"); return; }
+  toast("Touch added.");
+  await refreshAndRerender();
+}
+async function markProspectDead(prospectId){
+  const {error} = await sb.from("prospects").update({status:"dead"}).eq("id", prospectId);
+  if(error){ toast("Couldn't update that.", "orange"); return; }
+  toast("Prospect marked dead.");
+  await refreshAndRerender();
+}
+async function convertProspectToOpportunity(prospectId, value){
+  const p = getProspect(prospectId);
+  if(!p) return;
+  const stageId = STAGES[0].id;
+  const {data, error} = await sb.from("opportunities").insert({
+    business: p.business, contact: p.contact, source: p.source || "Prospecting",
+    value: Number(value)||0, stage_id: stageId, created_by: STATE.session.user.id
+  }).select().single();
+  if(error){ toast("Couldn't convert that.", "orange"); return; }
+  await ensureReqRows(stageId, data.id);
+  await logActivity(data.id, "Opportunity created", "Converted from Scout prospect: "+p.business);
+  const {error: upErr} = await sb.from("prospects").update({status:"converted", converted_opportunity_id:data.id}).eq("id", prospectId);
+  if(upErr){ toast("Opportunity created, but couldn't mark the prospect converted.", "orange"); }
+  else { toast("Converted to Opportunity. \u{1F3AF}"); }
+  await refreshAndRerender();
+}
+function prospectStats(p){
+  const total = p.touches.length;
+  const done = p.touches.filter(t=>t.completedAt).length;
+  const today = new Date().toISOString().slice(0,10);
+  const next = p.touches.filter(t=>!t.completedAt).sort((a,b)=>a.dueDate.localeCompare(b.dueDate))[0] || null;
+  const overdue = !!(next && next.dueDate < today);
+  const dueToday = !!(next && next.dueDate === today);
+  return {total, done, next, overdue, dueToday};
+}
+
 function fuelGaugeData(){
   let judged=0, verified=0, criticalInstances=0;
   const criticalOppIds = new Set();
@@ -878,19 +1074,19 @@ const NAV_LIVE = [
   {id:"quality", label:"Quality",        glyph:"✓"}
 ];
 const NAV_LIVE_V2 = [
-  {id:"onboarding", label:"Onboarding", glyph:"\u{1F6E0}"},
-  {id:"accounts",   label:"Clients",    glyph:"\u{1F91D}"},
-  {id:"campaigns",  label:"Campaigns",  glyph:"\u{1F680}"},
-  {id:"content",    label:"Content",    glyph:"\u{1F58C}"},
-  {id:"reporting",  label:"Reporting",  glyph:"\u{1F4CA}"}
+  {id:"prospecting", label:"Prospecting", glyph:"\u{1F50D}"},
+  {id:"onboarding",  label:"Onboarding",  glyph:"\u{1F6E0}"},
+  {id:"accounts",    label:"Clients",     glyph:"\u{1F91D}"},
+  {id:"campaigns",   label:"Campaigns",   glyph:"\u{1F680}"},
+  {id:"content",     label:"Content",     glyph:"\u{1F58C}"},
+  {id:"reporting",   label:"Reporting",   glyph:"\u{1F4CA}"},
+  {id:"automations", label:"Automations", glyph:"\u{269A}"}
 ];
 const NAV_ADMIN = [
   {id:"admin", label:"SOP Gates", glyph:"⚙"},
   {id:"team",  label:"Team",      glyph:"⛁"}
 ];
-const NAV_V2 = [
-  {id:"automations",label:"Automations"}
-];
+const NAV_V2 = [];
 const NAV_V3 = [
   {id:"reviews",label:"Dept. Reviews"},{id:"evidence",label:"Evidence Analysis"},{id:"exec",label:"Executive Summary"}
 ];
@@ -898,11 +1094,13 @@ const PAGE_META = {
   command:{kicker:"ADVENTURE FUEL OS", title:"COMMAND CENTER"},
   sales:{kicker:"HUNTER", title:"SALES WORKFLOW"},
   quality:{kicker:"PROCESS · QUALITY · GROWTH", title:"VERIFICATION QUEUE"},
+  prospecting:{kicker:"SCOUT", title:"PROSPECTING"},
   onboarding:{kicker:"FLOW", title:"ONBOARDING WORKFLOW"},
   accounts:{kicker:"GROW", title:"CLIENT WORKFLOW"},
   campaigns:{kicker:"LAUNCH", title:"CAMPAIGN WORKFLOW"},
   content:{kicker:"CRAFT", title:"CONTENT WORKFLOW"},
   reporting:{kicker:"MEASURE", title:"REPORTING"},
+  automations:{kicker:"ATLAS", title:"AUTOMATIONS"},
   admin:{kicker:"ADMIN — WORKFLOW ENGINE", title:"SOP GATES"},
   team:{kicker:"ADMIN — WORKFLOW ENGINE", title:"TEAM"}
 };
@@ -915,8 +1113,10 @@ function renderNav(){
   if(isAdmin) NAV_ADMIN.forEach(item=>{ html += navBtn(item, STATE.ui.view===item.id, false, null); });
   html += `<div class="nav-group-label">Live — V2</div>`;
   NAV_LIVE_V2.forEach(item=>{ html += navBtn(item, STATE.ui.view===item.id, false, null); });
-  html += `<div class="nav-group-label">V2 — Workflow Engine</div>`;
-  NAV_V2.forEach(item=>{ html += navBtn(item, false, true, "V2"); });
+  if(NAV_V2.length){
+    html += `<div class="nav-group-label">V2 — Workflow Engine</div>`;
+    NAV_V2.forEach(item=>{ html += navBtn(item, false, true, "V2"); });
+  }
   html += `<div class="nav-group-label">V3 — Intelligence</div>`;
   NAV_V3.forEach(item=>{ html += navBtn(item, false, true, "V3"); });
   nav.innerHTML = html;
@@ -941,11 +1141,13 @@ function showView(viewId){
   if(viewId==="command") renderCommand();
   if(viewId==="sales") renderSales();
   if(viewId==="quality") renderQuality();
+  if(viewId==="prospecting") renderProspecting();
   if(viewId==="onboarding") renderOnboarding();
   if(viewId==="accounts") renderAccounts();
   if(viewId==="campaigns") renderCampaigns();
   if(viewId==="content") renderContent();
   if(viewId==="reporting") renderReporting();
+  if(viewId==="automations") renderAutomations();
   if(viewId==="admin") renderAdmin();
   if(viewId==="team") renderTeam();
 }
@@ -954,6 +1156,7 @@ function renderPageActions(viewId){
   if(viewId==="sales" || viewId==="command"){ el.innerHTML = `<button class="btn primary" data-action="open-new">+ NEW OPPORTUNITY</button>`; }
   else if(viewId==="campaigns"){ el.innerHTML = `<button class="btn primary" data-action="open-new-campaign">+ NEW CAMPAIGN</button>`; }
   else if(viewId==="content"){ el.innerHTML = `<button class="btn primary" data-action="open-new-content">+ NEW CONTENT</button>`; }
+  else if(viewId==="prospecting"){ el.innerHTML = `<button class="btn primary" data-action="open-new-prospect">+ NEW PROSPECT</button>`; }
   else { el.innerHTML = ""; }
 }
 function renderRoadmap(label){
@@ -1293,6 +1496,19 @@ function renderRecordDetail(id, type){
     }
   }
 
+  const competitorsHtml = (o.competitors||[]).map(comp=>`
+    <div class="competitor-card">
+      <div class="competitor-head">
+        <div class="competitor-name">${esc(comp.name)}${comp.website?` <a href="${esc(comp.website)}" target="_blank" rel="noopener" class="competitor-link">↗</a>`:""}</div>
+        <button class="del" data-action="delete-competitor" data-competitor="${comp.id}" title="Remove">×</button>
+      </div>
+      ${comp.pricingNotes?`<div class="competitor-field"><b>PRICING</b>${esc(comp.pricingNotes)}</div>`:""}
+      ${comp.strengths?`<div class="competitor-field"><b>STRENGTHS</b>${esc(comp.strengths)}</div>`:""}
+      ${comp.weaknesses?`<div class="competitor-field"><b>WEAKNESSES</b>${esc(comp.weaknesses)}</div>`:""}
+      ${comp.angle?`<div class="competitor-field"><b>OUR ANGLE</b>${esc(comp.angle)}</div>`:""}
+      ${comp.sourceNotes?`<div class="competitor-source">${esc(comp.sourceNotes)}</div>`:""}
+    </div>`).join("") || `<div class="empty-state">NO COMPETITORS RESEARCHED YET.</div>`;
+
   const timelineHtml = o.activity.slice(0,12).map((ev,i)=>`
     <div class="tl-item">
       <div class="tl-dot-col"><div class="tl-dot"></div>${i<Math.min(o.activity.length,12)-1?'<div class="tl-line"></div>':''}</div>
@@ -1328,6 +1544,11 @@ function renderRecordDetail(id, type){
       ${o.status==="active" ? `<div class="req-list">${reqListHtml}</div>` : ""}
       ${decisionHtml}
       ${handoffHtml}
+      <div class="sectionTitle" style="margin-top:30px;">
+        <div><span class="kicker" style="color:var(--paper-dim)">MARKET INTEL</span><h3 style="font-size:20px;">COMPETITIVE ANALYSIS</h3></div>
+        <button class="btn small" data-action="open-add-competitor" data-type="${type}" data-id="${o.id}">+ ADD COMPETITOR</button>
+      </div>
+      <div class="competitor-list">${competitorsHtml}</div>
       <div class="sectionTitle" style="margin-top:30px;"><div><span class="kicker blue">AUDIT TRAIL</span><h3 style="font-size:20px;">ACTIVITY HISTORY</h3></div></div>
       <div class="timeline">${timelineHtml}</div>
     </div>`;
@@ -1391,6 +1612,115 @@ function renderQuality(){
         <button class="btn small" data-action="open-deal" data-type="${type}" data-id="${o.id}">REVIEW IN DETAIL →</button>
       </div>
     </div>`).join("") : `<div class="empty-state">QUEUE'S CLEAR. NOTHING WAITING ON VERIFICATION.</div>`;
+}
+
+/* ---------------------------------------------------------- */
+/* PROSPECTING — SCOUT (render)                                  */
+/* ---------------------------------------------------------- */
+function renderProspecting(){
+  const active = STATE.prospects.filter(p=>p.status==="active");
+  let overdueCount=0, dueTodayCount=0;
+  active.forEach(p=>{ const s = prospectStats(p); if(s.overdue) overdueCount++; else if(s.dueToday) dueTodayCount++; });
+  const convertedCount = STATE.prospects.filter(p=>p.status==="converted").length;
+
+  document.getElementById("prospectMetrics").innerHTML = `
+    ${metricTile(active.length,"Active Prospects")}
+    ${metricTile(overdueCount,"Overdue Touches", overdueCount?"bad":"")}
+    ${metricTile(dueTodayCount,"Due Today", dueTodayCount?"info":"")}
+    ${metricTile(convertedCount,"Converted All-Time")}
+  `;
+
+  const sorted = active.slice().sort((a,b)=>{
+    const sa = prospectStats(a), sb = prospectStats(b);
+    const da = sa.next ? sa.next.dueDate : "9999-99-99";
+    const db = sb.next ? sb.next.dueDate : "9999-99-99";
+    return da.localeCompare(db);
+  });
+
+  document.getElementById("prospectList").innerHTML = sorted.length ? sorted.map(p=>{
+    const s = prospectStats(p);
+    const dueLabel = !s.next ? "ALL TOUCHES COMPLETE" : s.overdue ? "OVERDUE — "+s.next.label.toUpperCase() : s.dueToday ? "DUE TODAY — "+s.next.label.toUpperCase() : "DUE "+fmtDate(new Date(s.next.dueDate+"T00:00:00").getTime())+" — "+s.next.label.toUpperCase();
+    const badgeCls = !s.next ? "blue" : s.overdue ? "critical" : s.dueToday ? "orange" : "neutral";
+    return `<div class="prospect-card">
+      <div class="prospect-main">
+        <div class="att-top"><span class="att-biz">${esc(p.business)}</span><span class="pill ${badgeCls}">${esc(dueLabel)}</span><span class="pill neutral">${s.done}/${s.total} TOUCHES</span></div>
+        <div class="prospect-sub">${esc(p.contact)}${p.source?" · "+esc(p.source):""}</div>
+      </div>
+      <div class="prospect-side">
+        ${s.next?`<button class="btn small primary" data-action="quick-complete-touch" data-touch="${s.next.id}">MARK ${esc(s.next.label.toUpperCase())} DONE</button>`:""}
+        <button class="btn small" data-action="open-prospect" data-id="${p.id}">VIEW →</button>
+      </div>
+    </div>`;
+  }).join("") : `<div class="empty-state">NO ACTIVE PROSPECTS — ADD ONE TO START A CADENCE.</div>`;
+}
+function openProspectDialog(id){
+  const dlg = document.getElementById("prospectDialog");
+  dlg.dataset.prospectId = id;
+  renderProspectDetail(id);
+  if(!dlg.open) dlg.showModal();
+}
+function renderProspectDetail(id){
+  const p = getProspect(id);
+  if(!p) return;
+  const today = new Date().toISOString().slice(0,10);
+  const touchesHtml = p.touches.map(t=>{
+    const overdue = !t.completedAt && t.dueDate < today;
+    const cls = t.completedAt ? "touch-done" : overdue ? "touch-overdue" : "";
+    return `<div class="touch-item ${cls}">
+      <div class="touch-main">
+        <div class="touch-top"><b>${esc(t.label)}</b><span class="pill neutral">${t.channel.toUpperCase()}</span><span class="touch-due">${overdue?"OVERDUE — ":""}DUE ${fmtDate(new Date(t.dueDate+"T00:00:00").getTime())}</span></div>
+        ${t.completedAt?`<div class="touch-meta">✓ Completed ${fmtDate(t.completedAt)} · ${relTime(t.completedAt)}${t.completedBy?" by "+esc(t.completedBy):""}</div>`:""}
+        ${t.notes?`<div class="touch-notes">${esc(t.notes)}</div>`:""}
+      </div>
+      <div class="touch-actions">
+        ${t.completedAt
+          ? `<button class="btn small" data-action="reopen-touch" data-touch="${t.id}">REOPEN</button>`
+          : `<input type="text" class="mini-input" placeholder="Notes (optional)" data-role="touch-note-input" data-touch="${t.id}" style="width:160px;">
+             <button class="btn small primary" data-action="complete-touch" data-touch="${t.id}">MARK DONE</button>`}
+      </div>
+    </div>`;
+  }).join("") || `<div class="empty-state">NO TOUCHES YET.</div>`;
+
+  const statusBadge = p.status==="converted" ? `<div class="handed-badge">✓ CONVERTED TO OPPORTUNITY</div>`
+    : p.status==="dead" ? `<div class="gate-banner blocked"><span class="g-icon mono">DEAD</span><span>No longer being pursued.</span></div>` : "";
+
+  const actionsHtml = p.status==="active" ? `
+    <div class="sectionTitle" style="margin-top:26px;"><div><span class="kicker scout">DECISION</span><h3 style="font-size:20px;">CONVERT OR CLOSE</h3></div></div>
+    <div class="decision-row" style="flex-direction:column; align-items:stretch; gap:12px;">
+      <label style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--paper-dim);display:flex;flex-direction:column;gap:6px;">
+        ESTIMATED VALUE FOR NEW OPPORTUNITY ($)
+        <input type="number" id="convertValueInput" class="mini-input" value="3000" min="0" step="100" style="width:160px;">
+      </label>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <button class="btn primary" data-action="convert-prospect" data-id="${p.id}">CONVERT TO OPPORTUNITY →</button>
+        <button class="btn danger" data-action="mark-prospect-dead" data-id="${p.id}">MARK DEAD</button>
+      </div>
+    </div>` : "";
+
+  document.getElementById("prospectPanel").innerHTML = `
+    <div class="modalHead">
+      <div>
+        <div class="deal-head"><div class="deal-head-left"><span class="kicker scout">SCOUT · PROSPECT</span><h3>${esc(p.business)}</h3></div></div>
+        <div class="deal-sub"><span>CONTACT <b>${esc(p.contact)}</b></span>${p.phone?`<span>PHONE <b>${esc(p.phone)}</b></span>`:""}${p.email?`<span>EMAIL <b>${esc(p.email)}</b></span>`:""}${p.source?`<span>SOURCE <b>${esc(p.source)}</b></span>`:""}</div>
+      </div>
+      <button type="button" class="x" data-close-dialog="prospectDialog">×</button>
+    </div>
+    <div class="modal-body">
+      ${statusBadge}
+      ${p.notes?`<div class="competitor-source" style="margin-bottom:16px;">${esc(p.notes)}</div>`:""}
+      <div class="sectionTitle">
+        <div><span class="kicker scout">CADENCE</span><h3 style="font-size:20px;">OUTREACH TOUCHES</h3></div>
+        ${p.status==="active"?`<button class="btn small" data-action="open-add-touch">+ ADD TOUCH</button>`:""}
+      </div>
+      <div class="admin-add-row hidden" id="addTouchRow">
+        <select id="touchChannelSelect" class="mini-input" style="width:100px;"><option value="call">CALL</option><option value="email">EMAIL</option></select>
+        <input type="text" id="touchLabelInput" class="mini-input" placeholder="Label, e.g. Call 3" style="width:160px; margin-left:8px;">
+        <input type="date" id="touchDueInput" class="mini-input" style="width:150px; margin-left:8px;">
+        <button class="btn small primary" data-action="confirm-add-touch" data-id="${p.id}" style="margin-left:8px;">ADD</button>
+      </div>
+      <div class="touch-list">${touchesHtml}</div>
+      ${actionsHtml}
+    </div>`;
 }
 
 /* ---------------------------------------------------------- */
@@ -1482,6 +1812,89 @@ function renderReporting(){
       <span class="feed-actor">${esc(a.actor||"")}</span>
     </div>
   `).join("") : `<div class="empty-state">NO ACTIVITY YET.</div>`;
+}
+
+/* ---------------------------------------------------------- */
+/* AUTOMATIONS — ATLAS (render + mutations)                      */
+/* ---------------------------------------------------------- */
+async function toggleAutomationRule(key, enabled){
+  const {error} = await sb.from("automation_rules").update({enabled, updated_at:new Date().toISOString()}).eq("key", key);
+  if(error){ toast("Couldn't update that rule.", "orange"); return; }
+  toast(enabled ? "Rule enabled." : "Rule disabled.");
+  await refreshAndRerender();
+}
+async function updateAutomationThreshold(key, threshold){
+  const {error} = await sb.from("automation_rules").update({config:{threshold}, updated_at:new Date().toISOString()}).eq("key", key);
+  if(error){ toast("Couldn't update that.", "orange"); return; }
+  toast("Threshold updated.");
+  await refreshAndRerender();
+}
+function renderAutomations(){
+  const isAdmin = STATE.profile && STATE.profile.role === "admin";
+  const feed = globalActivityFeed();
+  const lastFired = (action)=>{
+    const hit = feed.find(a=>a.action===action);
+    return hit ? fmtDate(hit.ts)+" · "+relTime(hit.ts) : "Never fired yet.";
+  };
+
+  document.getElementById("systemAutomations").innerHTML = `
+    <div class="automation-card">
+      <div class="automation-head">
+        <div class="automation-name">Sales → Onboarding Handoff</div>
+        <span class="pill spark dot">ALWAYS ON</span>
+      </div>
+      <div class="automation-desc">When an opportunity's handoff gates all clear and it's sent to Flow, Atlas creates the Onboarding record automatically — first stage, gates reset, nothing to re-enter by hand.</div>
+      <div class="automation-meta">
+        <span class="automation-stat">FIRED <b>${STATE.clients.filter(c=>c.sourceOpportunityId).length}</b> TIMES</span>
+        <span class="automation-stat">LAST FIRED <b>${lastFired("Onboarding started")}</b></span>
+      </div>
+    </div>
+    <div class="automation-card">
+      <div class="automation-head">
+        <div class="automation-name">Onboarding → Clients Handoff</div>
+        <span class="pill spark dot">ALWAYS ON</span>
+      </div>
+      <div class="automation-desc">When a client is marked live, Atlas spins up the ongoing Client Account automatically — Cycle 1 begins the moment onboarding wraps.</div>
+      <div class="automation-meta">
+        <span class="automation-stat">FIRED <b>${STATE.accounts.filter(a=>a.sourceClientId).length}</b> TIMES</span>
+        <span class="automation-stat">LAST FIRED <b>${lastFired("Ongoing management started")}</b></span>
+      </div>
+    </div>
+  `;
+
+  const RULES = [
+    {key:"stale_gate_escalation", firedPrefix:"Escalated:"},
+    {key:"high_value_flag", firedPrefix:"Flagged as high-value"}
+  ];
+
+  document.getElementById("ruleAutomations").innerHTML = RULES.map(r=>{
+    const rule = STATE.automationRules[r.key];
+    if(!rule) return "";
+    const fired = automationFiredCount(r.firedPrefix);
+    const thresholdHtml = r.key==="high_value_flag" ? `
+      <div class="automation-config">
+        <span class="automation-stat">THRESHOLD</span>
+        ${isAdmin
+          ? `<input type="number" min="0" step="100" id="threshold-${r.key}" value="${Number(rule.config.threshold)||5000}">
+             <button class="btn small" data-action="save-automation-threshold" data-key="${r.key}">SAVE</button>`
+          : `<b class="mono">${money(Number(rule.config.threshold)||5000)}</b>`}
+      </div>` : "";
+    return `<div class="automation-card">
+      <div class="automation-head">
+        <div class="automation-name">${esc(rule.label)}</div>
+        <label class="switch" title="${isAdmin?"Toggle this rule":"Admin only"}">
+          <input type="checkbox" ${rule.enabled?"checked":""} data-action="toggle-automation" data-key="${r.key}" ${isAdmin?"":"disabled"}>
+          <span class="track"><span class="thumb"></span></span>
+        </label>
+      </div>
+      <div class="automation-desc">${esc(rule.description)}</div>
+      <div class="automation-meta">
+        <span class="automation-stat">FIRED <b>${fired}</b> TIMES</span>
+        <span class="automation-stat">STATUS <b>${rule.enabled?"ACTIVE":"PAUSED"}</b></span>
+      </div>
+      ${thresholdHtml}
+    </div>`;
+  }).join("");
 }
 
 /* ---------------------------------------------------------- */
@@ -1612,11 +2025,13 @@ function showViewSilently(viewId){
   if(viewId==="command") renderCommand();
   if(viewId==="sales") renderSales();
   if(viewId==="quality") renderQuality();
+  if(viewId==="prospecting") renderProspecting();
   if(viewId==="onboarding") renderOnboarding();
   if(viewId==="accounts") renderAccounts();
   if(viewId==="campaigns") renderCampaigns();
   if(viewId==="content") renderContent();
   if(viewId==="reporting") renderReporting();
+  if(viewId==="automations") renderAutomations();
   if(viewId==="admin") renderAdmin();
   if(viewId==="team") renderTeam();
 }
@@ -1632,6 +2047,10 @@ function subscribeRealtime(){
     .on("postgres_changes", {event:"*", schema:"public", table:"campaign_requirement_status"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"content_items"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"content_requirement_status"}, handleRealtimeChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"automation_rules"}, handleRealtimeChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"competitors"}, handleRealtimeChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"prospects"}, handleRealtimeChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"prospect_touches"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"activity_log"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"requirements"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"profiles"}, handleRealtimeChange)
@@ -1650,6 +2069,8 @@ async function refreshAndRerender(){
   showViewSilently(STATE.ui.view);
   const dlg = document.getElementById("dealDialog");
   if(dlg.open){ const id = dlg.dataset.dealId; if(id) renderRecordDetail(id, dlg.dataset.recordType||"opportunity"); }
+  const pDlg = document.getElementById("prospectDialog");
+  if(pDlg.open && pDlg.dataset.prospectId) renderProspectDetail(pDlg.dataset.prospectId);
 }
 
 function wireEvents(){
@@ -1710,6 +2131,31 @@ function wireEvents(){
     if(STATE.ui.view!=="content") showView("content");
   });
 
+  document.getElementById("competitorForm").addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const dlg = document.getElementById("competitorDialog");
+    const fd = new FormData(e.target);
+    await addCompetitor(dlg.dataset.type, dlg.dataset.recordId, {
+      name: fd.get("name"), website: fd.get("website"), pricingNotes: fd.get("pricingNotes"),
+      strengths: fd.get("strengths"), weaknesses: fd.get("weaknesses"),
+      angle: fd.get("angle"), sourceNotes: fd.get("sourceNotes")
+    });
+    e.target.reset();
+    dlg.close();
+  });
+
+  document.getElementById("newProspectForm").addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await createProspect({
+      business: fd.get("business"), contact: fd.get("contact"), phone: fd.get("phone"),
+      email: fd.get("email"), website: fd.get("website"), source: fd.get("source"), notes: fd.get("notes")
+    });
+    e.target.reset();
+    document.getElementById("newProspectDialog").close();
+    if(STATE.ui.view!=="prospecting") showView("prospecting");
+  });
+
   document.addEventListener("click",(e)=>{
     const closeBtn = e.target.closest("[data-close-dialog]");
     if(closeBtn){ document.getElementById(closeBtn.dataset.closeDialog).close(); }
@@ -1718,6 +2164,9 @@ function wireEvents(){
   document.getElementById("newDialog").addEventListener("click",(e)=>{ if(e.target.id==="newDialog") e.target.close(); });
   document.getElementById("newCampaignDialog").addEventListener("click",(e)=>{ if(e.target.id==="newCampaignDialog") e.target.close(); });
   document.getElementById("newContentDialog").addEventListener("click",(e)=>{ if(e.target.id==="newContentDialog") e.target.close(); });
+  document.getElementById("competitorDialog").addEventListener("click",(e)=>{ if(e.target.id==="competitorDialog") e.target.close(); });
+  document.getElementById("newProspectDialog").addEventListener("click",(e)=>{ if(e.target.id==="newProspectDialog") e.target.close(); });
+  document.getElementById("prospectDialog").addEventListener("click",(e)=>{ if(e.target.id==="prospectDialog") e.target.close(); });
 
   document.addEventListener("click", async (e)=>{
     const t = e.target.closest("[data-action]");
@@ -1751,6 +2200,42 @@ function wireEvents(){
       document.getElementById("newContentDialog").showModal();
       return;
     }
+    if(action==="open-add-competitor"){
+      const dlg = document.getElementById("competitorDialog");
+      dlg.dataset.type = t.dataset.type;
+      dlg.dataset.recordId = t.dataset.id;
+      dlg.showModal();
+      return;
+    }
+    if(action==="delete-competitor"){ await deleteCompetitor(t.dataset.competitor); return; }
+    if(action==="open-new-prospect"){ document.getElementById("newProspectDialog").showModal(); return; }
+    if(action==="open-prospect"){ openProspectDialog(t.dataset.id); return; }
+    if(action==="quick-complete-touch"){ await completeTouch(t.dataset.touch, ""); return; }
+    if(action==="complete-touch"){
+      const input = t.closest(".touch-item").querySelector('[data-role="touch-note-input"]');
+      await completeTouch(t.dataset.touch, input ? input.value.trim() : "");
+      return;
+    }
+    if(action==="reopen-touch"){ await reopenTouch(t.dataset.touch); return; }
+    if(action==="open-add-touch"){
+      document.getElementById("addTouchRow").classList.remove("hidden");
+      document.getElementById("touchDueInput").valueAsDate = new Date();
+      return;
+    }
+    if(action==="confirm-add-touch"){
+      const channel = document.getElementById("touchChannelSelect").value;
+      const label = document.getElementById("touchLabelInput").value.trim();
+      const due = document.getElementById("touchDueInput").value;
+      if(!label || !due){ toast("Add a label and a due date first.", "orange"); return; }
+      await addTouch(t.dataset.id, channel, label, due);
+      return;
+    }
+    if(action==="convert-prospect"){
+      const val = document.getElementById("convertValueInput").value;
+      await convertProspectToOpportunity(t.dataset.id, val);
+      return;
+    }
+    if(action==="mark-prospect-dead"){ await markProspectDead(t.dataset.id); return; }
     if(action==="open-deal"){
       document.getElementById("dealDialog").dataset.dealId = t.dataset.id;
       openRecordDialog(t.dataset.id, recType);
@@ -1792,6 +2277,12 @@ function wireEvents(){
     }
     if(action==="del-req"){ await deleteRequirement(t.dataset.req); return; }
     if(action==="toggle-dim"){ await toggleDim(t.dataset.req, t.dataset.dim); return; }
+    if(action==="save-automation-threshold"){
+      const input = document.getElementById("threshold-"+t.dataset.key);
+      const val = Math.max(0, Number(input.value)||0);
+      await updateAutomationThreshold(t.dataset.key, val);
+      return;
+    }
   });
 
   document.addEventListener("change", async (e)=>{
@@ -1800,6 +2291,9 @@ function wireEvents(){
     }
     if(e.target.dataset && e.target.dataset.action==="team-role"){
       await updateTeamRole(e.target.dataset.id, e.target.value);
+    }
+    if(e.target.dataset && e.target.dataset.action==="toggle-automation"){
+      await toggleAutomationRule(e.target.dataset.key, e.target.checked);
     }
   });
 }
