@@ -29,6 +29,9 @@
   --critical:      #FF3B2E;
   --critical-soft: rgba(255,59,46,0.16);
 
+  --nitro:      #39D97A;
+  --nitro-soft: rgba(57,217,122,0.16);
+
   --font-display: 'Anton', 'Arial Narrow', Impact, sans-serif;
   --font-body:    'Barlow Condensed', 'Arial Narrow', Arial, sans-serif;
   --font-mono:    'JetBrains Mono', 'SF Mono', Consolas, monospace;
@@ -102,6 +105,7 @@ input,select,textarea{ font-family:inherit; }
 .kicker.orange{ color:var(--fuel); }
 .kicker.blue{ color:var(--signal); }
 .kicker.amber{ color:var(--amber); }
+.kicker.nitro{ color:var(--nitro); }
 .kicker.critical{ color:var(--critical); }
 
 .mono{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
