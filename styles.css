@@ -172,7 +172,9 @@ input,select,textarea{ font-family:inherit; }
    ============================================================ */
 #loginScreen{
   position:fixed; inset:0; z-index:500;
-  display:flex; align-items:center; justify-content:center;
+  overflow-y:auto;
+  -webkit-overflow-scrolling:touch;
+  padding:40px 16px;
   background:
     radial-gradient(ellipse 900px 500px at 50% 0%, rgba(253,70,1,.10), transparent 60%),
     radial-gradient(ellipse 700px 500px at 100% 100%, rgba(20,189,255,.08), transparent 60%),
@@ -183,6 +185,7 @@ input,select,textarea{ font-family:inherit; }
   width:min(460px,92vw);
   padding:0 8px;
   text-align:center;
+  margin:0 auto;
 }
 .login-card img.logo-hero{ width:132px; height:auto; margin:0 auto 18px; display:block; filter:drop-shadow(0 0 40px rgba(253,70,1,.25)); }
 .login-eyebrow{ font-family:var(--font-mono); font-size:12px; letter-spacing:.2em; color:var(--paper-dim); text-transform:uppercase; margin-bottom:10px; }
@@ -538,6 +541,7 @@ form textarea{ resize:vertical; min-height:70px; }
 .auth-form{ display:flex; flex-direction:column; gap:12px; text-align:left; }
 .auth-form label{ font-family:var(--font-mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--paper-dim); display:flex; flex-direction:column; gap:6px; }
 .auth-form input{ background:var(--ink-2); border:1px solid var(--line); border-radius:var(--radius); color:var(--paper); padding:.85em 1em; font-size:15px; font-family:var(--font-body); }
+#signinForm.hidden, #signupForm.hidden{ display:none; }
 .auth-error{ background:var(--critical-soft); border:1px solid var(--critical); color:var(--paper); border-radius:var(--radius); padding:10px 14px; font-size:13.5px; display:none; }
 .auth-error.show{ display:block; }
 .auth-notice{ background:var(--signal-soft); border:1px solid var(--signal-2); color:var(--paper); border-radius:var(--radius); padding:10px 14px; font-size:13.5px; display:none; }
