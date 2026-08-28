@@ -863,7 +863,7 @@ function wireEvents(){
     });
     if(error){ showAuthError(error.message); return; }
     if(data.session){ afterSignIn(data.session); }
-    else { showAuthNotice("Check your email to confirm your account, then sign in."); switchAuthTab("signin"); }
+    else { switchAuthTab("signin"); showAuthNotice("Check your email to confirm your account, then sign in."); }
   });
 
   document.getElementById("signOutBtn").addEventListener("click", async ()=>{
