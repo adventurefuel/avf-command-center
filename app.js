@@ -42,6 +42,7 @@ function toast(msg, kind){
   setTimeout(()=>{ el.style.opacity="0"; el.style.transition="opacity .25s"; setTimeout(()=>el.remove(), 260); }, 3200);
 }
 const DIM_LABEL = {process:"Process", quality:"Quality", growth:"Growth"};
+const WF_LABEL = {opportunity:"SALES", client:"ONBOARDING", account:"CLIENTS", campaign:"CAMPAIGNS", content:"CONTENT"};
 
 /* ---------------------------------------------------------- */
 /* STATE                                                        */
@@ -50,6 +51,7 @@ let STAGES = [];              // [{id,name,order}] — Sales
 let ONB_STAGES = [];          // [{id,name,order}] — Onboarding
 let ACC_STAGES = [];          // [{id,name,order}] — Clients (ongoing account management)
 let CMP_STAGES = [];          // [{id,name,order}] — Campaigns (launch)
+let CNT_STAGES = [];          // [{id,name,order}] — Content (craft)
 let STATE = {
   session:null, profile:null,     // {id, fullName, role}
   profiles:{},                    // id -> {fullName, role, email}
@@ -58,9 +60,10 @@ let STATE = {
   clients:[],
   accounts:[],
   campaigns:[],
+  content:[],
   ui:{ view:"command", qDim:"all", search:"" }
 };
-const ALL_STAGE_ARRS = () => [STAGES, ONB_STAGES, ACC_STAGES, CMP_STAGES];
+const ALL_STAGE_ARRS = () => [STAGES, ONB_STAGES, ACC_STAGES, CMP_STAGES, CNT_STAGES];
 function stagesArrFor(stageId){ return ALL_STAGE_ARRS().find(arr=>arr.some(s=>s.id===stageId)) || STAGES; }
 function nextStageId(id){ const arr = stagesArrFor(id); const order = arr.map(s=>s.id); const i = order.indexOf(id); return i>=0 && i<order.length-1 ? order[i+1] : null; }
 function stageName(id){ for(const arr of ALL_STAGE_ARRS()){ const s = arr.find(x=>x.id===id); if(s) return s.name; } return id; }
@@ -68,7 +71,8 @@ function getOpp(id){ return STATE.opportunities.find(o=>o.id===id); }
 function getClient(id){ return STATE.clients.find(c=>c.id===id); }
 function getAccount(id){ return STATE.accounts.find(a=>a.id===id); }
 function getCampaign(id){ return STATE.campaigns.find(c=>c.id===id); }
-function getRecord(id, type){ return type==="account" ? getAccount(id) : type==="client" ? getClient(id) : type==="campaign" ? getCampaign(id) : getOpp(id); }
+function getContent(id){ return STATE.content.find(c=>c.id===id); }
+function getRecord(id, type){ return type==="account" ? getAccount(id) : type==="client" ? getClient(id) : type==="campaign" ? getCampaign(id) : type==="content" ? getContent(id) : getOpp(id); }
 function reqConfig(stageId, reqId){ return (STATE.requirements[stageId]||[]).find(r=>r.id===reqId); }
 function stageReqs(stageId){ return STATE.requirements[stageId]||[]; }
 function daysInStage(o){ return Math.floor((nowTs()-o.stageEnteredAt)/DAY); }
@@ -88,6 +92,7 @@ async function loadEngineConfig(){
   ONB_STAGES = (stages||[]).filter(s=>s.workflow_id==="onboarding").map(s=>({id:s.id, name:s.name, order:s.sort_order}));
   ACC_STAGES = (stages||[]).filter(s=>s.workflow_id==="accounts").map(s=>({id:s.id, name:s.name, order:s.sort_order}));
   CMP_STAGES = (stages||[]).filter(s=>s.workflow_id==="campaigns").map(s=>({id:s.id, name:s.name, order:s.sort_order}));
+  CNT_STAGES = (stages||[]).filter(s=>s.workflow_id==="content").map(s=>({id:s.id, name:s.name, order:s.sort_order}));
   const grouped = {};
   (reqs||[]).forEach(r=>{
     (grouped[r.stage_id] = grouped[r.stage_id]||[]).push({
@@ -218,6 +223,34 @@ async function loadCampaigns(){
   });
 }
 
+async function loadContent(){
+  const {data, error} = await sb.from("content_items")
+    .select("*, content_requirement_status(*), activity_log(*), accounts(business)")
+    .order("created_at", {ascending:false});
+  if(error){ console.error(error); toast("Couldn't load content.", "orange"); return; }
+  STATE.content = (data||[]).map(c=>{
+    const reqStatus = {};
+    (c.content_requirement_status||[]).forEach(rs=>{
+      reqStatus[rs.requirement_id] = {
+        status: rs.status,
+        evidence: rs.evidence,
+        verifiedBy: rs.verified_by ? (STATE.profiles[rs.verified_by]||{}).fullName || "a teammate" : null,
+        verifiedAt: rs.verified_at ? new Date(rs.verified_at).getTime() : null,
+        blockedReason: rs.blocked_reason,
+        updatedAt: new Date(rs.updated_at).getTime()
+      };
+    });
+    const activity = (c.activity_log||[])
+      .map(x=>({ts:new Date(x.created_at).getTime(), actor:x.actor_name, action:x.action, detail:x.detail||""}))
+      .sort((x,y)=>y.ts-x.ts);
+    return {
+      id:c.id, business:c.business, contact:c.contact, value:Number(c.value),
+      stageId:c.stage_id, stageEnteredAt:new Date(c.stage_entered_at).getTime(), createdAt:new Date(c.created_at).getTime(),
+      status:c.status, accountId:c.account_id, accountName:c.accounts?c.accounts.business:null, reqStatus, activity
+    };
+  });
+}
+
 async function refreshAll(){
   await loadProfiles();
   await loadEngineConfig();
@@ -225,6 +258,7 @@ async function refreshAll(){
   await loadClients();
   await loadAccounts();
   await loadCampaigns();
+  await loadContent();
 }
 
 /* ---------------------------------------------------------- */
@@ -262,6 +296,11 @@ async function ensureNewRequirementRows(stageId, requirementId){
   if(camps && camps.length){
     const rows = camps.map(c=>({campaign_id:c.id, requirement_id:requirementId, status:"pending"}));
     await sb.from("campaign_requirement_status").upsert(rows, {onConflict:"campaign_id,requirement_id", ignoreDuplicates:true});
+  }
+  const {data: cnts} = await sb.from("content_items").select("id").eq("stage_id", stageId).eq("status","active");
+  if(cnts && cnts.length){
+    const rows = cnts.map(c=>({content_id:c.id, requirement_id:requirementId, status:"pending"}));
+    await sb.from("content_requirement_status").upsert(rows, {onConflict:"content_id,requirement_id", ignoreDuplicates:true});
   }
 }
 
@@ -656,6 +695,98 @@ async function createCampaign(fields){
   await refreshAndRerender();
 }
 
+/* ---------------- Content / craft mutations ---------------- */
+async function logContentActivity(contentId, action, detail){
+  await sb.from("activity_log").insert({
+    content_id: contentId, actor_id: STATE.session.user.id, actor_name: actorName(),
+    action, detail: detail || null
+  });
+}
+async function ensureContentReqRows(stageId, contentId){
+  const reqs = stageReqs(stageId);
+  if(!reqs.length) return;
+  const rows = reqs.map(r=>({content_id:contentId, requirement_id:r.id, status:"pending"}));
+  await sb.from("content_requirement_status").upsert(rows, {onConflict:"content_id,requirement_id", ignoreDuplicates:true});
+}
+async function submitContentEvidence(contentId, reqId, text){
+  const cfg = reqConfig(getContent(contentId).stageId, reqId);
+  const {error} = await sb.from("content_requirement_status")
+    .update({status:"submitted", evidence:text, updated_at:new Date().toISOString()})
+    .eq("content_id", contentId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't save that.", "orange"); return; }
+  await logContentActivity(contentId, "Submitted evidence: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
+  toast("Evidence submitted — awaiting verification.");
+  await refreshAndRerender();
+}
+async function verifyContentReq(contentId, reqId){
+  const cfg = reqConfig(getContent(contentId).stageId, reqId);
+  const {error} = await sb.from("content_requirement_status")
+    .update({status:"verified", verified_by:STATE.session.user.id, verified_at:new Date().toISOString(), updated_at:new Date().toISOString()})
+    .eq("content_id", contentId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't verify that.", "orange"); return; }
+  await logContentActivity(contentId, "Verified: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
+  toast("Verified.");
+  await refreshAndRerender();
+}
+async function flagContentReq(contentId, reqId, reason){
+  const cfg = reqConfig(getContent(contentId).stageId, reqId);
+  const {error} = await sb.from("content_requirement_status")
+    .update({status:"blocked", blocked_reason: reason || "Flagged — needs a closer look.", updated_at:new Date().toISOString()})
+    .eq("content_id", contentId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't flag that.", "orange"); return; }
+  await logContentActivity(contentId, "Flagged: "+cfg.label, reason);
+  toast("Flagged as a blocker.", "orange");
+  await refreshAndRerender();
+}
+async function resolveContentReq(contentId, reqId){
+  const cfg = reqConfig(getContent(contentId).stageId, reqId);
+  const {error} = await sb.from("content_requirement_status")
+    .update({status:"pending", blocked_reason:null, updated_at:new Date().toISOString()})
+    .eq("content_id", contentId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't reopen that.", "orange"); return; }
+  await logContentActivity(contentId, "Reopened for review: "+cfg.label, "");
+  toast("Sent back for fresh evidence.");
+  await refreshAndRerender();
+}
+async function advanceContentStage(contentId){
+  const c = getContent(contentId);
+  const a = analyzeStage(c);
+  if(!a.allRequiredVerified){ toast("Can't advance — required gates still open.", "orange"); return; }
+  const next = nextStageId(c.stageId);
+  if(!next) return;
+  await ensureContentReqRows(next, contentId);
+  const {error} = await sb.from("content_items")
+    .update({stage_id:next, stage_entered_at:new Date().toISOString()})
+    .eq("id", contentId);
+  if(error){ toast("Couldn't advance that.", "orange"); return; }
+  await logContentActivity(contentId, "Advanced to "+stageName(next), "All required gates cleared.");
+  toast("Advanced to "+stageName(next)+".");
+  await refreshAndRerender();
+}
+async function publishContent(contentId){
+  const c = getContent(contentId);
+  const a = analyzeStage(c);
+  if(!a.allRequiredVerified){ toast("Not ready yet — required gates still open.", "orange"); return; }
+  const {error} = await sb.from("content_items").update({status:"published"}).eq("id", contentId);
+  if(error){ toast("Couldn't update that.", "orange"); return; }
+  await logContentActivity(contentId, "Published", "Content is live.");
+  toast("Content published. \u{1F4E2}");
+  await refreshAndRerender();
+}
+async function createContent(fields){
+  const stageId = CNT_STAGES[0].id;
+  const {data, error} = await sb.from("content_items").insert({
+    business: fields.business, contact: fields.contact,
+    value: Number(fields.value)||0, stage_id: stageId,
+    account_id: fields.accountId || null, created_by: STATE.session.user.id
+  }).select().single();
+  if(error){ toast("Couldn't create that.", "orange"); return; }
+  await ensureContentReqRows(stageId, data.id);
+  await logContentActivity(data.id, "Content created", fields.accountId ? "Linked to an existing client account." : "");
+  toast("Content created.");
+  await refreshAndRerender();
+}
+
 /* ---------------------------------------------------------- */
 /* ANALYSIS (pure — unchanged shape from the prototype)          */
 /* ---------------------------------------------------------- */
@@ -679,7 +810,8 @@ function activeRecords(){
     ...STATE.opportunities.filter(o=>o.status==="active").map(o=>({o, type:"opportunity"})),
     ...STATE.clients.filter(c=>c.status==="active").map(o=>({o, type:"client"})),
     ...STATE.accounts.filter(a=>a.status==="active").map(o=>({o, type:"account"})),
-    ...STATE.campaigns.filter(c=>c.status==="active").map(o=>({o, type:"campaign"}))
+    ...STATE.campaigns.filter(c=>c.status==="active").map(o=>({o, type:"campaign"})),
+    ...STATE.content.filter(c=>c.status==="active").map(o=>({o, type:"content"}))
   ];
 }
 function fuelGaugeData(){
@@ -748,14 +880,15 @@ const NAV_LIVE = [
 const NAV_LIVE_V2 = [
   {id:"onboarding", label:"Onboarding", glyph:"\u{1F6E0}"},
   {id:"accounts",   label:"Clients",    glyph:"\u{1F91D}"},
-  {id:"campaigns",  label:"Campaigns",  glyph:"\u{1F680}"}
+  {id:"campaigns",  label:"Campaigns",  glyph:"\u{1F680}"},
+  {id:"content",    label:"Content",    glyph:"\u{1F58C}"}
 ];
 const NAV_ADMIN = [
   {id:"admin", label:"SOP Gates", glyph:"⚙"},
   {id:"team",  label:"Team",      glyph:"⛁"}
 ];
 const NAV_V2 = [
-  {id:"content",label:"Content"},{id:"reporting",label:"Reporting"},{id:"automations",label:"Automations"}
+  {id:"reporting",label:"Reporting"},{id:"automations",label:"Automations"}
 ];
 const NAV_V3 = [
   {id:"reviews",label:"Dept. Reviews"},{id:"evidence",label:"Evidence Analysis"},{id:"exec",label:"Executive Summary"}
@@ -767,6 +900,7 @@ const PAGE_META = {
   onboarding:{kicker:"FLOW", title:"ONBOARDING WORKFLOW"},
   accounts:{kicker:"GROW", title:"CLIENT WORKFLOW"},
   campaigns:{kicker:"LAUNCH", title:"CAMPAIGN WORKFLOW"},
+  content:{kicker:"CRAFT", title:"CONTENT WORKFLOW"},
   admin:{kicker:"ADMIN — WORKFLOW ENGINE", title:"SOP GATES"},
   team:{kicker:"ADMIN — WORKFLOW ENGINE", title:"TEAM"}
 };
@@ -808,6 +942,7 @@ function showView(viewId){
   if(viewId==="onboarding") renderOnboarding();
   if(viewId==="accounts") renderAccounts();
   if(viewId==="campaigns") renderCampaigns();
+  if(viewId==="content") renderContent();
   if(viewId==="admin") renderAdmin();
   if(viewId==="team") renderTeam();
 }
@@ -815,6 +950,7 @@ function renderPageActions(viewId){
   const el = document.getElementById("pageActions");
   if(viewId==="sales" || viewId==="command"){ el.innerHTML = `<button class="btn primary" data-action="open-new">+ NEW OPPORTUNITY</button>`; }
   else if(viewId==="campaigns"){ el.innerHTML = `<button class="btn primary" data-action="open-new-campaign">+ NEW CAMPAIGN</button>`; }
+  else if(viewId==="content"){ el.innerHTML = `<button class="btn primary" data-action="open-new-content">+ NEW CONTENT</button>`; }
   else { el.innerHTML = ""; }
 }
 function renderRoadmap(label){
@@ -881,7 +1017,7 @@ function renderCommand(){
     ${metricTile(avgDays+"d","Avg. Days In Stage")}
   `;
 
-  const wfTag = (type)=> `<span class="pill neutral">${type==="client"?"ONBOARDING":type==="account"?"CLIENTS":type==="campaign"?"CAMPAIGNS":"SALES"}</span>`;
+  const wfTag = (type)=> `<span class="pill neutral">${WF_LABEL[type]||"SALES"}</span>`;
 
   document.getElementById("critKicker").textContent = criticalGroups.length ? "CRITICAL · "+criticalGroups.length : "CRITICAL";
   document.getElementById("attention").innerHTML = criticalGroups.length ? criticalGroups.map(({o,type,items,days})=>{
@@ -915,6 +1051,7 @@ function renderCommand(){
     else if(type==="client" && !next){ label = "MARK LIVE"; action = "mark-live"; }
     else if(type==="account" && !next){ label = "COMPLETE CYCLE"; action = "complete-cycle"; }
     else if(type==="campaign" && !next){ label = "GO LIVE"; action = "go-live"; }
+    else if(type==="content" && !next){ label = "PUBLISH"; action = "publish-content"; }
     else { label = "ADVANCE → "+stageName(next).toUpperCase(); action = "advance"; }
     return `<div class="ready-row">
       <div style="flex:1"><b>${esc(o.business)}</b> <span class="stage-arrow">· ${stageName(o.stageId)} gate clear</span> ${wfTag(type)}</div>
@@ -1033,12 +1170,39 @@ function campaignCard(c){
 }
 
 /* ---------------------------------------------------------- */
+/* CONTENT / CRAFT                                               */
+/* ---------------------------------------------------------- */
+function renderContent(){
+  const cols = CNT_STAGES.map(st=>{
+    const items = STATE.content.filter(c=>c.stageId===st.id && c.status==="active");
+    const value = items.reduce((s,c)=>s+c.value,0);
+    return `<div class="stage-col">
+      <div class="stage-col-head"><b>${esc(st.name)}</b><div class="stage-meta"><span>${items.length} OPEN</span><span>${money(value)}</span></div></div>
+      <div class="stage-col-body">${items.map(c=>contentCard(c)).join("") || `<div class="empty-state" style="padding:16px 10px;">EMPTY</div>`}</div>
+    </div>`;
+  }).join("");
+  document.getElementById("pipeline-cnt").innerHTML = cols;
+}
+function contentCard(c){
+  const a = analyzeStage(c);
+  const critical = a.hasCritical;
+  const badge = critical ? `<span class="pill critical">BLOCKED</span>` : a.allRequiredVerified ? `<span class="pill blue">READY</span>` : `<span class="pill neutral">IN PROGRESS</span>`;
+  return `<button class="deal-card ${critical?"state-critical":""}" data-action="open-deal" data-type="content" data-id="${c.id}">
+    <div class="biz">${esc(c.business)}</div>
+    <div class="contact">${esc(c.contact)}${c.accountName?" · "+esc(c.accountName):""}</div>
+    <div class="foot"><span class="value mono">${money(c.value)}</span>${badge}</div>
+    <div class="days">${daysInStage(c)}D IN STAGE</div>
+  </button>`;
+}
+
+/* ---------------------------------------------------------- */
 /* OPPORTUNITY DETAIL                                            */
 /* ---------------------------------------------------------- */
 function openDeal(id){ openRecordDialog(id, "opportunity"); }
 function openClient(id){ openRecordDialog(id, "client"); }
 function openAccount(id){ openRecordDialog(id, "account"); }
 function openCampaign(id){ openRecordDialog(id, "campaign"); }
+function openContent(id){ openRecordDialog(id, "content"); }
 function openRecordDialog(id, type){
   const dlg = document.getElementById("dealDialog");
   dlg.dataset.recordType = type;
@@ -1072,6 +1236,8 @@ function renderRecordDetail(id, type){
     gateBanner = `<div class="handed-badge">✓ LIVE — ONBOARDING COMPLETE</div>`;
   } else if(type==="campaign" && o.status==="live"){
     gateBanner = `<div class="handed-badge">✓ LIVE — CAMPAIGN RUNNING</div>`;
+  } else if(type==="content" && o.status==="published"){
+    gateBanner = `<div class="handed-badge">✓ PUBLISHED</div>`;
   } else if(a.hasCritical){
     gateBanner = `<div class="gate-banner blocked"><span class="g-icon mono">GATE BLOCKED</span><span>This stage can't advance until every critical item is resolved.</span></div>`;
   } else if(a.allRequiredVerified){
@@ -1111,6 +1277,10 @@ function renderRecordDetail(id, type){
       decisionHtml = `<div class="decision-row">
         <button class="btn primary" data-action="go-live" data-type="campaign" data-id="${o.id}" ${a.allRequiredVerified?"":"disabled"}>GO LIVE →</button>
       </div>`;
+    } else if(type==="content" && !next){
+      decisionHtml = `<div class="decision-row">
+        <button class="btn primary" data-action="publish-content" data-type="content" data-id="${o.id}" ${a.allRequiredVerified?"":"disabled"}>PUBLISH →</button>
+      </div>`;
     } else if(next){
       const isFinalGate = isOpp && o.stageId==="contract";
       decisionHtml = `<div class="decision-row">
@@ -1130,14 +1300,16 @@ function renderRecordDetail(id, type){
       </div>
     </div>`).join("");
 
-  const kicker = isOpp ? "HUNTER · OPPORTUNITY" : type==="account" ? "GROW · CLIENT ACCOUNT" : type==="campaign" ? "LAUNCH · CAMPAIGN" : "FLOW · CLIENT";
+  const kicker = isOpp ? "HUNTER · OPPORTUNITY" : type==="account" ? "GROW · CLIENT ACCOUNT" : type==="campaign" ? "LAUNCH · CAMPAIGN" : type==="content" ? "CRAFT · CONTENT" : "FLOW · CLIENT";
   const subFields = isOpp
     ? `<span>CONTACT <b>${esc(o.contact)}</b></span><span>VALUE <b>${money(o.value)}</b></span><span>SOURCE <b>${esc(o.source)}</b></span><span>IN STAGE <b>${daysInStage(o)}D</b></span>`
     : type==="account"
       ? `<span>CONTACT <b>${esc(o.contact)}</b></span><span>VALUE <b>${money(o.value)}</b></span><span>CYCLE <b>${o.cycleNumber}</b></span><span>IN STAGE <b>${daysInStage(o)}D</b></span>`
       : type==="campaign"
         ? `<span>CONTACT <b>${esc(o.contact)}</b></span><span>BUDGET <b>${money(o.value)}</b></span>${o.accountName?`<span>ACCOUNT <b>${esc(o.accountName)}</b></span>`:""}<span>IN STAGE <b>${daysInStage(o)}D</b></span>`
-        : `<span>CONTACT <b>${esc(o.contact)}</b></span><span>VALUE <b>${money(o.value)}</b></span><span>IN STAGE <b>${daysInStage(o)}D</b></span>`;
+        : type==="content"
+          ? `<span>OWNER <b>${esc(o.contact)}</b></span><span>EST. COST <b>${money(o.value)}</b></span>${o.accountName?`<span>ACCOUNT <b>${esc(o.accountName)}</b></span>`:""}<span>IN STAGE <b>${daysInStage(o)}D</b></span>`
+          : `<span>CONTACT <b>${esc(o.contact)}</b></span><span>VALUE <b>${money(o.value)}</b></span><span>IN STAGE <b>${daysInStage(o)}D</b></span>`;
 
   document.getElementById("dealPanel").innerHTML = `
     <div class="modalHead">
@@ -1207,7 +1379,7 @@ function renderQuality(){
   document.getElementById("qualityView").innerHTML = rows.length ? rows.map(({o,cfg,st,type})=>`
     <div class="q-row">
       <div class="q-main">
-        <div class="att-top"><span class="att-biz">${esc(o.business)}</span>${dimTags(cfg.dims)}<span class="pill neutral">${stageName(o.stageId)}</span><span class="pill neutral">${type==="client"?"ONBOARDING":type==="account"?"CLIENTS":type==="campaign"?"CAMPAIGNS":"SALES"}</span></div>
+        <div class="att-top"><span class="att-biz">${esc(o.business)}</span>${dimTags(cfg.dims)}<span class="pill neutral">${stageName(o.stageId)}</span><span class="pill neutral">${WF_LABEL[type]||"SALES"}</span></div>
         <div class="q-req">${esc(cfg.label)}</div>
         <div class="req-evidence" style="margin-top:8px; max-width:60ch;">${esc(st.evidence||"")}</div>
       </div>
@@ -1240,6 +1412,8 @@ function renderAdmin(){
     ${ACC_STAGES.map(block).join("")}
     <div class="sectionTitle" style="margin-top:30px;"><div><span class="kicker nitro">CAMPAIGNS</span><h3 style="font-size:20px;">LAUNCH WORKFLOW</h3></div></div>
     ${CMP_STAGES.map(block).join("")}
+    <div class="sectionTitle" style="margin-top:30px;"><div><span class="kicker violet">CONTENT</span><h3 style="font-size:20px;">CRAFT WORKFLOW</h3></div></div>
+    ${CNT_STAGES.map(block).join("")}
   `;
 }
 function adminReqRow(stageId, r){
@@ -1347,6 +1521,7 @@ function showViewSilently(viewId){
   if(viewId==="onboarding") renderOnboarding();
   if(viewId==="accounts") renderAccounts();
   if(viewId==="campaigns") renderCampaigns();
+  if(viewId==="content") renderContent();
   if(viewId==="admin") renderAdmin();
   if(viewId==="team") renderTeam();
 }
@@ -1360,6 +1535,8 @@ function subscribeRealtime(){
     .on("postgres_changes", {event:"*", schema:"public", table:"account_requirement_status"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"campaigns"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"campaign_requirement_status"}, handleRealtimeChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"content_items"}, handleRealtimeChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"content_requirement_status"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"activity_log"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"requirements"}, handleRealtimeChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"profiles"}, handleRealtimeChange)
@@ -1429,6 +1606,15 @@ function wireEvents(){
     if(STATE.ui.view!=="campaigns") showView("campaigns");
   });
 
+  document.getElementById("newContentForm").addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await createContent({business:fd.get("business"), contact:fd.get("contact"), value:fd.get("value"), accountId:fd.get("account_id")});
+    e.target.reset();
+    document.getElementById("newContentDialog").close();
+    if(STATE.ui.view!=="content") showView("content");
+  });
+
   document.addEventListener("click",(e)=>{
     const closeBtn = e.target.closest("[data-close-dialog]");
     if(closeBtn){ document.getElementById(closeBtn.dataset.closeDialog).close(); }
@@ -1436,6 +1622,7 @@ function wireEvents(){
   document.getElementById("dealDialog").addEventListener("click",(e)=>{ if(e.target.id==="dealDialog") e.target.close(); });
   document.getElementById("newDialog").addEventListener("click",(e)=>{ if(e.target.id==="newDialog") e.target.close(); });
   document.getElementById("newCampaignDialog").addEventListener("click",(e)=>{ if(e.target.id==="newCampaignDialog") e.target.close(); });
+  document.getElementById("newContentDialog").addEventListener("click",(e)=>{ if(e.target.id==="newContentDialog") e.target.close(); });
 
   document.addEventListener("click", async (e)=>{
     const t = e.target.closest("[data-action]");
@@ -1447,7 +1634,8 @@ function wireEvents(){
       opportunity: {submitEvidence, verifyReq, flagReq, resolveReq, advance:advanceStage},
       client:      {submitEvidence:submitClientEvidence, verifyReq:verifyClientReq, flagReq:flagClientReq, resolveReq:resolveClientReq, advance:advanceClientStage},
       account:     {submitEvidence:submitAccountEvidence, verifyReq:verifyAccountReq, flagReq:flagAccountReq, resolveReq:resolveAccountReq, advance:advanceAccountStage},
-      campaign:    {submitEvidence:submitCampaignEvidence, verifyReq:verifyCampaignReq, flagReq:flagCampaignReq, resolveReq:resolveCampaignReq, advance:advanceCampaignStage}
+      campaign:    {submitEvidence:submitCampaignEvidence, verifyReq:verifyCampaignReq, flagReq:flagCampaignReq, resolveReq:resolveCampaignReq, advance:advanceCampaignStage},
+      content:     {submitEvidence:submitContentEvidence, verifyReq:verifyContentReq, flagReq:flagContentReq, resolveReq:resolveContentReq, advance:advanceContentStage}
     };
     const H = RECORD_HANDLERS[recType] || RECORD_HANDLERS.opportunity;
 
@@ -1459,6 +1647,13 @@ function wireEvents(){
       sel.innerHTML = `<option value="">— none —</option>` + STATE.accounts.filter(a=>a.status==="active")
         .map(a=>`<option value="${a.id}">${esc(a.business)}</option>`).join("");
       document.getElementById("newCampaignDialog").showModal();
+      return;
+    }
+    if(action==="open-new-content"){
+      const sel = document.getElementById("contentAccountSelect");
+      sel.innerHTML = `<option value="">— none —</option>` + STATE.accounts.filter(a=>a.status==="active")
+        .map(a=>`<option value="${a.id}">${esc(a.business)}</option>`).join("");
+      document.getElementById("newContentDialog").showModal();
       return;
     }
     if(action==="open-deal"){
@@ -1486,6 +1681,7 @@ function wireEvents(){
     if(action==="mark-live"){ await markClientLive(t.dataset.id); return; }
     if(action==="complete-cycle"){ await completeAccountCycle(t.dataset.id); return; }
     if(action==="go-live"){ await markCampaignLive(t.dataset.id); return; }
+    if(action==="publish-content"){ await publishContent(t.dataset.id); return; }
     if(action==="mark-lost"){ await markLost(t.dataset.id, "Marked lost from Command Center."); return; }
     if(action==="toggle-handoff"){ await toggleHandoff(t.dataset.id, t.dataset.req); return; }
     if(action==="send-handoff"){ await sendHandoff(t.dataset.id); return; }
