@@ -138,6 +138,14 @@
       <div id="pipeline-acc" class="pipeline"></div>
     </section>
 
+    <!-- CAMPAIGNS / LAUNCH -->
+    <section id="view-campaigns" class="view">
+      <div class="pipeline-toolbar">
+        <span class="kicker nitro">LAUNCH — CAMPAIGN WORKFLOW</span>
+      </div>
+      <div id="pipeline-cmp" class="pipeline"></div>
+    </section>
+
     <!-- QUALITY -->
     <section id="view-quality" class="view">
       <div class="q-filters" id="qFilters"></div>
@@ -193,6 +201,26 @@
       <label>ESTIMATED VALUE ($)<input name="value" type="number" value="3000" min="0" step="100"></label>
     </div>
     <button class="btn primary full" type="submit">CREATE OPPORTUNITY →</button>
+  </form>
+</dialog>
+
+<dialog id="newCampaignDialog">
+  <div class="modalHead">
+    <div><span class="kicker nitro">LAUNCH</span><h3>NEW CAMPAIGN</h3></div>
+    <button type="button" class="x" data-close-dialog="newCampaignDialog">×</button>
+  </div>
+  <form id="newCampaignForm" class="modal-body">
+    <label>CAMPAIGN NAME<input name="business" required placeholder="e.g. Q4 Retargeting — Motor City Detailing"></label>
+    <label>PRIMARY CONTACT<input name="contact" required placeholder="e.g. Dana Reyes"></label>
+    <div class="two">
+      <label>LINKED CLIENT ACCOUNT
+        <select name="account_id" id="campaignAccountSelect">
+          <option value="">— none —</option>
+        </select>
+      </label>
+      <label>BUDGET ($)<input name="value" type="number" value="1500" min="0" step="100"></label>
+    </div>
+    <button class="btn primary full" type="submit">CREATE CAMPAIGN →</button>
   </form>
 </dialog>
 
