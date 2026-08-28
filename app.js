@@ -881,14 +881,15 @@ const NAV_LIVE_V2 = [
   {id:"onboarding", label:"Onboarding", glyph:"\u{1F6E0}"},
   {id:"accounts",   label:"Clients",    glyph:"\u{1F91D}"},
   {id:"campaigns",  label:"Campaigns",  glyph:"\u{1F680}"},
-  {id:"content",    label:"Content",    glyph:"\u{1F58C}"}
+  {id:"content",    label:"Content",    glyph:"\u{1F58C}"},
+  {id:"reporting",  label:"Reporting",  glyph:"\u{1F4CA}"}
 ];
 const NAV_ADMIN = [
   {id:"admin", label:"SOP Gates", glyph:"⚙"},
   {id:"team",  label:"Team",      glyph:"⛁"}
 ];
 const NAV_V2 = [
-  {id:"reporting",label:"Reporting"},{id:"automations",label:"Automations"}
+  {id:"automations",label:"Automations"}
 ];
 const NAV_V3 = [
   {id:"reviews",label:"Dept. Reviews"},{id:"evidence",label:"Evidence Analysis"},{id:"exec",label:"Executive Summary"}
@@ -901,6 +902,7 @@ const PAGE_META = {
   accounts:{kicker:"GROW", title:"CLIENT WORKFLOW"},
   campaigns:{kicker:"LAUNCH", title:"CAMPAIGN WORKFLOW"},
   content:{kicker:"CRAFT", title:"CONTENT WORKFLOW"},
+  reporting:{kicker:"MEASURE", title:"REPORTING"},
   admin:{kicker:"ADMIN — WORKFLOW ENGINE", title:"SOP GATES"},
   team:{kicker:"ADMIN — WORKFLOW ENGINE", title:"TEAM"}
 };
@@ -943,6 +945,7 @@ function showView(viewId){
   if(viewId==="accounts") renderAccounts();
   if(viewId==="campaigns") renderCampaigns();
   if(viewId==="content") renderContent();
+  if(viewId==="reporting") renderReporting();
   if(viewId==="admin") renderAdmin();
   if(viewId==="team") renderTeam();
 }
@@ -1391,6 +1394,94 @@ function renderQuality(){
 }
 
 /* ---------------------------------------------------------- */
+/* REPORTING — MEASURE                                           */
+/* ---------------------------------------------------------- */
+const TERMINAL_ACTIONS = ["Sent to Flow","Marked Live","Campaign Live","Published"];
+function isTerminalAction(action){
+  if(!action) return false;
+  return TERMINAL_ACTIONS.includes(action) || action.startsWith("Completed Cycle");
+}
+function globalActivityFeed(limit){
+  const feed = [];
+  const addAll = (records, type)=>{ (records||[]).forEach(r=>{ (r.activity||[]).forEach(a=>feed.push({...a, business:r.business, type})); }); };
+  addAll(STATE.opportunities, "opportunity");
+  addAll(STATE.clients, "client");
+  addAll(STATE.accounts, "account");
+  addAll(STATE.campaigns, "campaign");
+  addAll(STATE.content, "content");
+  feed.sort((a,b)=>b.ts-a.ts);
+  return limit ? feed.slice(0, limit) : feed;
+}
+function renderReporting(){
+  const g = fuelGaugeData();
+
+  const WORKFLOWS = [
+    {key:"opportunity", label:"SALES",      records:STATE.opportunities, completedLabel:"HANDED OFF",       completedCount: STATE.opportunities.filter(o=>o.status==="handed_off").length},
+    {key:"client",      label:"ONBOARDING", records:STATE.clients,       completedLabel:"MARKED LIVE",      completedCount: STATE.clients.filter(c=>c.status==="live").length},
+    {key:"account",     label:"CLIENTS",    records:STATE.accounts,      completedLabel:"CYCLES COMPLETED", completedCount: STATE.accounts.reduce((s,a)=>s+Math.max(0,(a.cycleNumber||1)-1),0)},
+    {key:"campaign",    label:"CAMPAIGNS",  records:STATE.campaigns,     completedLabel:"LIVE",             completedCount: STATE.campaigns.filter(c=>c.status==="live").length},
+    {key:"content",     label:"CONTENT",    records:STATE.content,       completedLabel:"PUBLISHED",        completedCount: STATE.content.filter(c=>c.status==="published").length}
+  ];
+
+  const rows = WORKFLOWS.map(wf=>{
+    const active = wf.records.filter(r=>r.status==="active");
+    const activeValue = active.reduce((s,r)=>s+r.value,0);
+    const avgDays = active.length ? Math.round(active.reduce((s,r)=>s+daysInStage(r),0)/active.length) : 0;
+    let judged=0, verified=0;
+    active.forEach(r=>{
+      analyzeStage(r).items.forEach(it=>{
+        if(!it.cfg.required) return;
+        judged++;
+        if(it.state.status==="verified") verified++;
+      });
+    });
+    const compliance = judged ? Math.round((verified/judged)*100) : 100;
+    return {...wf, activeCount:active.length, activeValue, avgDays, compliance};
+  });
+
+  const totalActiveValue = rows.reduce((s,r)=>s+r.activeValue,0);
+  const totalActiveCount = rows.reduce((s,r)=>s+r.activeCount,0);
+  const totalCompleted = rows.reduce((s,r)=>s+r.completedCount,0);
+
+  const feed = globalActivityFeed(60);
+  const now = new Date();
+  const completedThisMonth = feed.filter(a=> isTerminalAction(a.action) && new Date(a.ts).getMonth()===now.getMonth() && new Date(a.ts).getFullYear()===now.getFullYear()).length;
+
+  document.getElementById("reportMetrics").innerHTML = `
+    ${metricTile(totalActiveCount,"Active Records — All Workflows")}
+    ${metricTile(money(totalActiveValue),"Total Active Pipeline Value")}
+    ${metricTile(g.score+"%","Overall SOP Compliance", g.score<75?"info":"")}
+    ${metricTile(totalCompleted,"Completed All-Time")}
+    ${metricTile(completedThisMonth,"Completed This Month")}
+    ${metricTile(g.critical,"Critical Gates Open", g.critical?"bad":"")}
+  `;
+
+  document.getElementById("reportBreakdown").innerHTML = rows.map(r=>`
+    <div class="report-row">
+      <div class="report-row-head">
+        <span class="pill neutral">${r.label}</span>
+        <span class="report-row-name">${r.activeCount} active · ${money(r.activeValue)} in flight</span>
+      </div>
+      <div class="report-row-stats">
+        <div class="report-stat"><div class="num mono">${r.avgDays}D</div><div class="lbl">Avg. Days In Stage</div></div>
+        <div class="report-stat"><div class="num mono">${r.compliance}%</div><div class="lbl">SOP Compliance</div></div>
+        <div class="report-stat"><div class="num mono">${r.completedCount}</div><div class="lbl">${r.completedLabel}</div></div>
+      </div>
+    </div>
+  `).join("");
+
+  document.getElementById("reportFeed").innerHTML = feed.length ? feed.slice(0,15).map(a=>`
+    <div class="feed-row">
+      <span class="feed-time mono">${fmtDate(a.ts)}</span>
+      <span class="pill neutral">${WF_LABEL[a.type]||"SALES"}</span>
+      <span class="feed-biz">${esc(a.business)}</span>
+      <span class="feed-action">${esc(a.action)}</span>
+      <span class="feed-actor">${esc(a.actor||"")}</span>
+    </div>
+  `).join("") : `<div class="empty-state">NO ACTIVITY YET.</div>`;
+}
+
+/* ---------------------------------------------------------- */
 /* ADMIN — SOP GATES                                             */
 /* ---------------------------------------------------------- */
 function renderAdmin(){
@@ -1522,6 +1613,7 @@ function showViewSilently(viewId){
   if(viewId==="accounts") renderAccounts();
   if(viewId==="campaigns") renderCampaigns();
   if(viewId==="content") renderContent();
+  if(viewId==="reporting") renderReporting();
   if(viewId==="admin") renderAdmin();
   if(viewId==="team") renderTeam();
 }
