@@ -1084,11 +1084,15 @@ const NAV_LIVE_V2 = [
 ];
 const NAV_ADMIN = [
   {id:"admin", label:"SOP Gates", glyph:"⚙"},
-  {id:"team",  label:"Team",      glyph:"⛁"}
+  {id:"team",  label:"Team",      glyph:"⛁"},
+  {id:"architecture", label:"Architecture", glyph:"◈"}
 ];
 const NAV_V2 = [];
 const NAV_V3 = [
   {id:"reviews",label:"Dept. Reviews"},{id:"evidence",label:"Evidence Analysis"},{id:"exec",label:"Executive Summary"}
+];
+const NAV_DOCS = [
+  {id:"manual", label:"Field Manual", glyph:"📖"}
 ];
 const PAGE_META = {
   command:{kicker:"ADVENTURE FUEL OS", title:"COMMAND CENTER"},
@@ -1102,7 +1106,9 @@ const PAGE_META = {
   reporting:{kicker:"MEASURE", title:"REPORTING"},
   automations:{kicker:"ATLAS", title:"AUTOMATIONS"},
   admin:{kicker:"ADMIN — WORKFLOW ENGINE", title:"SOP GATES"},
-  team:{kicker:"ADMIN — WORKFLOW ENGINE", title:"TEAM"}
+  team:{kicker:"ADMIN — WORKFLOW ENGINE", title:"TEAM"},
+  architecture:{kicker:"ADMIN — SYSTEMS", title:"PUBLISH PIPELINE"},
+  manual:{kicker:"REFERENCE", title:"FIELD MANUAL"}
 };
 
 function renderNav(){
@@ -1119,6 +1125,8 @@ function renderNav(){
   }
   html += `<div class="nav-group-label">V3 — Intelligence</div>`;
   NAV_V3.forEach(item=>{ html += navBtn(item, false, true, "V3"); });
+  html += `<div class="nav-group-label">Reference</div>`;
+  NAV_DOCS.forEach(item=>{ html += navBtn(item, STATE.ui.view===item.id, false, null); });
   nav.innerHTML = html;
 }
 function navBtn(item, active, locked, tag){
