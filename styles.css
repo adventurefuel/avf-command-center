@@ -649,3 +649,72 @@ form textarea{ resize:vertical; min-height:70px; }
 @keyframes spin{ to{ transform:rotate(360deg); } }
 .loading-veil{ position:fixed; inset:0; background:var(--ink); z-index:600; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:14px; }
 .loading-veil.hidden{ display:none; }
+
+/* ============================================================
+   DOCUMENTATION — Field Manual / Architecture
+   ============================================================ */
+.doc-wrap{ max-width:900px; }
+.doc-feat{
+  border:1px solid var(--line); border-left:3px solid var(--accent,var(--fuel));
+  background:var(--ink-2); border-radius:var(--radius); padding:22px 24px 24px; margin-bottom:16px;
+}
+.doc-feat-head{ display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; }
+.doc-feat h3{ font-size:22px; margin:6px 0 0; }
+.doc-purpose{ color:var(--paper-dim); font-size:15px; max-width:70ch; margin:8px 0 16px; }
+.doc-stages{ display:flex; flex-wrap:wrap; align-items:center; gap:0; margin-bottom:16px; font-family:var(--font-mono); font-size:12px; }
+.doc-stage-pill{ border:1px solid var(--line); background:var(--ink-3); color:var(--paper-dim); padding:5px 11px; border-radius:3px; }
+.doc-stage-arrow{ color:var(--paper-faint); padding:0 7px; }
+.doc-feat h4{
+  font-family:var(--font-mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--paper-dim);
+  margin:18px 0 9px; border-top:1px solid var(--line-soft); padding-top:14px;
+}
+.doc-feat h4:first-of-type{ border-top:none; padding-top:0; margin-top:2px; }
+.doc-steps{ margin:0; padding:0; list-style:none; counter-reset:step; }
+.doc-steps li{ counter-increment:step; position:relative; padding:0 0 11px 32px; font-size:15px; color:var(--paper-dim); }
+.doc-steps li::before{
+  content:counter(step); position:absolute; left:0; top:1px; width:21px; height:21px;
+  border:1px solid var(--accent,var(--fuel)); color:var(--accent,var(--fuel)); border-radius:50%;
+  font-family:var(--font-mono); font-size:11px; display:flex; align-items:center; justify-content:center;
+}
+.doc-steps li:last-child{ padding-bottom:0; }
+.doc-tip{
+  display:flex; gap:9px; background:var(--accent-soft,var(--fuel-soft)); border:1px solid var(--line);
+  border-left:3px solid var(--accent,var(--fuel)); border-radius:3px; padding:11px 13px; font-size:14px;
+  color:var(--paper-dim); margin-top:4px;
+}
+.doc-tip::before{ content:"◆"; color:var(--accent,var(--fuel)); font-size:11px; line-height:1.5; }
+.doc-roles{ width:100%; border-collapse:collapse; font-size:14.5px; margin-top:6px; }
+.doc-roles th{ text-align:left; font-family:var(--font-mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--paper-faint); border-bottom:1px solid var(--line); padding:0 10px 9px 0; }
+.doc-roles td{ border-bottom:1px solid var(--line-soft); padding:11px 10px 11px 0; color:var(--paper-dim); vertical-align:top; }
+.doc-roles td:first-child{ white-space:nowrap; }
+
+/* diagram */
+.diagram-shell{ border:1px solid var(--line); background:var(--ink-2); border-radius:var(--radius); padding:16px; overflow-x:auto; margin-bottom:18px; }
+.diagram-shell svg{ display:block; min-width:900px; width:100%; height:auto; }
+.diag-node{ width:100%; height:100%; border:1px solid var(--nodeline,var(--line)); background:var(--ink-3); border-radius:5px; padding:13px 15px; display:flex; flex-direction:column; gap:5px; font-family:var(--font-body); }
+.diag-node .glyph{ font-size:19px; color:var(--nodeline,var(--paper)); line-height:1; }
+.diag-node .name{ font-family:var(--font-display); font-weight:400; text-transform:uppercase; font-size:18px; color:var(--paper); }
+.diag-node .role{ font-family:var(--font-mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--nodeline,var(--paper-dim)); margin-top:-3px; }
+.diag-node .desc{ font-size:13.5px; color:var(--paper-dim); line-height:1.32; }
+.diag-arrlabel{ font-family:var(--font-mono); font-size:10px; letter-spacing:.07em; fill:var(--paper-faint); text-anchor:middle; text-transform:uppercase; }
+.diag-badge{ font-family:var(--font-mono); font-size:12.5px; font-weight:700; fill:var(--ink); text-anchor:middle; dominant-baseline:central; }
+.diag-linklabel-bg{ fill:var(--ink-3); stroke:var(--line); stroke-width:1; }
+.diag-linklabel-text{ font-family:var(--font-mono); font-size:10px; letter-spacing:.04em; text-anchor:middle; text-transform:uppercase; }
+.diag-legend{ display:flex; flex-direction:column; gap:9px; margin-bottom:26px; }
+.diag-legend .row{ display:flex; gap:13px; align-items:flex-start; font-size:14.5px; color:var(--paper-dim); }
+.diag-legend .num{ flex:0 0 auto; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-size:11px; font-weight:700; color:var(--ink); background:var(--dot,var(--fuel)); }
+.diag-legend .row.runtime .num{ background:transparent; border:1.5px dashed var(--dot,var(--cyan)); color:var(--dot,var(--cyan)); }
+
+.whycards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:13px; margin-bottom:8px; }
+.whycard{ border:1px solid var(--line); border-left:3px solid var(--accent,var(--fuel)); background:var(--ink-2); border-radius:var(--radius); padding:15px 17px; }
+.whycard .k{ font-family:var(--font-mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--accent,var(--fuel)); margin-bottom:7px; }
+.whycard p{ margin:0; font-size:14px; color:var(--paper-dim); }
+
+.refgrid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; }
+.refcard{ border:1px solid var(--line); background:var(--ink-2); border-radius:var(--radius); padding:16px 18px; }
+.refcard .rk{ display:flex; align-items:center; gap:7px; font-family:var(--font-mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--rc,var(--fuel)); margin-bottom:10px; }
+.refcard dl{ margin:0; }
+.refcard dt{ font-family:var(--font-mono); font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--paper-faint); margin-top:9px; }
+.refcard dt:first-child{ margin-top:0; }
+.refcard dd{ margin:2px 0 0; font-family:var(--font-mono); font-size:13.5px; color:var(--paper); word-break:break-word; }
+.refcard dd.blank{ color:var(--paper-faint); font-style:italic; }
