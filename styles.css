@@ -557,8 +557,9 @@ form textarea{ resize:vertical; min-height:70px; }
 .admin-stage-block{ border:1px solid var(--line); border-radius:var(--radius); margin-bottom:20px; background:var(--ink-2); }
 .admin-stage-head{ display:flex; align-items:center; justify-content:space-between; padding:16px 18px; border-bottom:1px solid var(--line-soft); }
 .admin-stage-head h4{ font-size:19px; }
-.admin-req-row{ display:grid; grid-template-columns:1.6fr auto auto auto; gap:14px; align-items:center; padding:12px 18px; border-bottom:1px solid var(--line-soft); }
-.admin-req-row:last-of-type{ border-bottom:none; }
+.admin-req-row{ display:grid; grid-template-columns:1.6fr auto auto auto auto; gap:14px; align-items:center; padding:12px 18px; border-bottom:1px solid var(--line-soft); }
+.admin-req-row-wrap:last-of-type .admin-req-row{ border-bottom:none; }
+.admin-req-row-wrap:has(.admin-artifact-editor:not(.hidden)) .admin-req-row{ border-bottom-color:transparent; }
 .admin-req-name{ font-size:14.5px; font-weight:600; }
 .admin-req-name .sub{ display:block; font-family:var(--font-mono); font-size:10.5px; color:var(--paper-faint); font-weight:400; margin-top:2px; }
 .dim-toggle-group{ display:flex; gap:5px; }
@@ -576,6 +577,32 @@ form textarea{ resize:vertical; min-height:70px; }
 .admin-req-row .del:hover{ color:var(--critical); }
 .admin-add-row{ padding:14px 18px; }
 .threshold-input{ width:56px; background:var(--ink-3); border:1px solid var(--line); border-radius:2px; color:var(--paper); font-family:var(--font-mono); text-align:center; padding:5px 4px; }
+
+/* ---- Admin: per-gate artifact / prompt / validation-rubric editor ---- */
+.admin-artifact-editor{ padding:16px 18px 18px; border-bottom:1px solid var(--line-soft); background:var(--ink-3); }
+.admin-artifact-editor label{ display:block; font-family:var(--font-mono); font-size:10.5px; letter-spacing:.05em; color:var(--paper-faint); text-transform:uppercase; margin:12px 0 6px; }
+.admin-artifact-editor label:first-of-type{ margin-top:0; }
+.admin-artifact-editor label .sub{ display:inline; text-transform:none; font-family:var(--font-body); font-size:12px; letter-spacing:0; color:var(--paper-faint); margin-left:6px; }
+.admin-artifact-editor input, .admin-artifact-editor textarea{ width:100%; background:var(--ink-4); border:1px solid var(--line); border-radius:2px; color:var(--paper); padding:8px 10px; font-size:13.5px; font-family:var(--font-body); }
+.admin-artifact-editor textarea{ resize:vertical; min-height:70px; }
+.criteria-list{ display:flex; flex-direction:column; gap:6px; }
+.criteria-row{ display:flex; gap:8px; align-items:center; }
+.criteria-row .criterion-input{ flex:1; }
+.criteria-row .del{ background:none; border:none; color:var(--paper-faint); font-size:16px; flex:none; }
+.criteria-row .del:hover{ color:var(--critical); }
+
+/* ---- Artifact banner + AI prompt button (on req-item / handoff checklist) ---- */
+.artifact-banner{ display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:10px; padding:8px 11px; background:var(--violet-soft); border:1px solid var(--violet); border-radius:2px; }
+.artifact-tag{ font-family:var(--font-mono); font-size:10.5px; letter-spacing:.04em; color:var(--violet); text-transform:uppercase; }
+
+/* ---- Validation rubric checklist (inside a submitted req-item) ---- */
+.validation-rubric{ margin-top:10px; background:var(--ink-4); border-left:2px solid var(--violet); border-radius:2px; padding:10px 12px; }
+.rubric-label{ font-family:var(--font-mono); font-size:10px; letter-spacing:.05em; color:var(--paper-faint); text-transform:uppercase; margin-bottom:8px; }
+.rubric-item{ display:flex; align-items:center; gap:10px; font-size:13.5px; padding:4px 0; }
+.rubric-item .box{ width:16px; height:16px; border:1px solid var(--line); border-radius:2px; flex:none; display:flex; align-items:center; justify-content:center; font-size:10px; }
+.rubric-item.checked .box{ background:var(--violet); border-color:var(--violet); color:#160800; }
+.rubric-item.checked span.txt{ color:var(--paper); }
+.rubric-item span.txt{ color:var(--paper-dim); }
 
 /* ============================================================
    ROADMAP / LOCKED TEASER
