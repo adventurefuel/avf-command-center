@@ -81,6 +81,20 @@ function stageReqs(stageId){ return STATE.requirements[stageId]||[]; }
 function daysInStage(o){ return Math.floor((nowTs()-o.stageEnteredAt)/DAY); }
 function actorName(){ return STATE.profile ? STATE.profile.fullName : "Someone"; }
 function dimsLabel(stageId, reqId){ const c = reqConfig(stageId, reqId); return c ? c.dims.map(d=>DIM_LABEL[d]).join(", ") : ""; }
+// Client-side mirror of the DB trigger (enforce_artifact_second_review): only engages
+// for gates that have a validation rubric defined — plain checklist gates are untouched.
+function checkVerifyGuard(record, cfg, reqId){
+  if(!cfg || !(cfg.validationCriteria||[]).length) return null;
+  const st = (record.reqStatus||{})[reqId] || {};
+  if(st.submittedBy && STATE.session && st.submittedBy === STATE.session.user.id){
+    return "This artifact needs a second reviewer — you can't verify evidence you submitted yourself.";
+  }
+  const checks = st.validationChecks||[];
+  if(!checks.length || checks.some(c=>!c.checked)){
+    return "Check off every item in the validation checklist before verifying.";
+  }
+  return null;
+}
 
 /* ---------------------------------------------------------- */
 /* DATA LAYER — Supabase reads                                  */
@@ -100,7 +114,9 @@ async function loadEngineConfig(){
   (reqs||[]).forEach(r=>{
     (grouped[r.stage_id] = grouped[r.stage_id]||[]).push({
       id:r.id, label:r.label, dims:r.dims||[], required:r.required, dept:r.dept,
-      thresholdDays:r.threshold_days, sortOrder:r.sort_order
+      thresholdDays:r.threshold_days, sortOrder:r.sort_order,
+      artifactName:r.artifact_name||null, aiPromptTemplate:r.ai_prompt_template||null,
+      validationCriteria:r.validation_criteria||[]
     });
   });
   STATE.requirements = grouped;
@@ -136,6 +152,8 @@ async function loadOpportunities(){
         verifiedBy: rs.verified_by ? (STATE.profiles[rs.verified_by]||{}).fullName || "a teammate" : null,
         verifiedAt: rs.verified_at ? new Date(rs.verified_at).getTime() : null,
         blockedReason: rs.blocked_reason,
+        submittedBy: rs.submitted_by || null,
+        validationChecks: rs.validation_checks || [],
         updatedAt: new Date(rs.updated_at).getTime()
       };
     });
@@ -164,6 +182,8 @@ async function loadClients(){
         verifiedBy: rs.verified_by ? (STATE.profiles[rs.verified_by]||{}).fullName || "a teammate" : null,
         verifiedAt: rs.verified_at ? new Date(rs.verified_at).getTime() : null,
         blockedReason: rs.blocked_reason,
+        submittedBy: rs.submitted_by || null,
+        validationChecks: rs.validation_checks || [],
         updatedAt: new Date(rs.updated_at).getTime()
       };
     });
@@ -192,6 +212,8 @@ async function loadAccounts(){
         verifiedBy: rs.verified_by ? (STATE.profiles[rs.verified_by]||{}).fullName || "a teammate" : null,
         verifiedAt: rs.verified_at ? new Date(rs.verified_at).getTime() : null,
         blockedReason: rs.blocked_reason,
+        submittedBy: rs.submitted_by || null,
+        validationChecks: rs.validation_checks || [],
         updatedAt: new Date(rs.updated_at).getTime()
       };
     });
@@ -220,6 +242,8 @@ async function loadCampaigns(){
         verifiedBy: rs.verified_by ? (STATE.profiles[rs.verified_by]||{}).fullName || "a teammate" : null,
         verifiedAt: rs.verified_at ? new Date(rs.verified_at).getTime() : null,
         blockedReason: rs.blocked_reason,
+        submittedBy: rs.submitted_by || null,
+        validationChecks: rs.validation_checks || [],
         updatedAt: new Date(rs.updated_at).getTime()
       };
     });
@@ -248,6 +272,8 @@ async function loadContent(){
         verifiedBy: rs.verified_by ? (STATE.profiles[rs.verified_by]||{}).fullName || "a teammate" : null,
         verifiedAt: rs.verified_at ? new Date(rs.verified_at).getTime() : null,
         blockedReason: rs.blocked_reason,
+        submittedBy: rs.submitted_by || null,
+        validationChecks: rs.validation_checks || [],
         updatedAt: new Date(rs.updated_at).getTime()
       };
     });
@@ -349,8 +375,9 @@ async function ensureNewRequirementRows(stageId, requirementId){
 
 async function submitEvidence(oppId, reqId, text){
   const cfg = reqConfig(getOpp(oppId).stageId, reqId);
+  const checks = (cfg.validationCriteria||[]).map(label=>({label, checked:false}));
   const {error} = await sb.from("requirement_status")
-    .update({status:"submitted", evidence:text, updated_at:new Date().toISOString()})
+    .update({status:"submitted", evidence:text, submitted_by:STATE.session.user.id, validation_checks:checks, updated_at:new Date().toISOString()})
     .eq("opportunity_id", oppId).eq("requirement_id", reqId);
   if(error){ toast("Couldn't save that.", "orange"); return; }
   await logActivity(oppId, "Submitted evidence: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
@@ -358,13 +385,26 @@ async function submitEvidence(oppId, reqId, text){
   await refreshAndRerender();
 }
 async function verifyReq(oppId, reqId){
-  const cfg = reqConfig(getOpp(oppId).stageId, reqId);
+  const o = getOpp(oppId);
+  const cfg = reqConfig(o.stageId, reqId);
+  const guard = checkVerifyGuard(o, cfg, reqId);
+  if(guard){ toast(guard, "orange"); return; }
   const {error} = await sb.from("requirement_status")
     .update({status:"verified", verified_by:STATE.session.user.id, verified_at:new Date().toISOString(), updated_at:new Date().toISOString()})
     .eq("opportunity_id", oppId).eq("requirement_id", reqId);
-  if(error){ toast("Couldn't verify that.", "orange"); return; }
+  if(error){ toast("Couldn't verify that — "+(error.message||"needs a second reviewer or an open checklist item"), "orange"); return; }
   await logActivity(oppId, "Verified: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
   toast("Verified.");
+  await refreshAndRerender();
+}
+async function toggleValidationCheck(oppId, reqId, idx){
+  const o = getOpp(oppId);
+  const st = o.reqStatus[reqId] || {};
+  const checks = (st.validationChecks||[]).map((c,i)=> i===idx ? {...c, checked:!c.checked} : c);
+  const {error} = await sb.from("requirement_status")
+    .update({validation_checks:checks, updated_at:new Date().toISOString()})
+    .eq("opportunity_id", oppId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't update that checklist item.", "orange"); return; }
   await refreshAndRerender();
 }
 async function flagReq(oppId, reqId, reason){
@@ -380,7 +420,7 @@ async function flagReq(oppId, reqId, reason){
 async function resolveReq(oppId, reqId){
   const cfg = reqConfig(getOpp(oppId).stageId, reqId);
   const {error} = await sb.from("requirement_status")
-    .update({status:"pending", blocked_reason:null, updated_at:new Date().toISOString()})
+    .update({status:"pending", blocked_reason:null, verified_by:null, verified_at:null, submitted_by:null, validation_checks:[], updated_at:new Date().toISOString()})
     .eq("opportunity_id", oppId).eq("requirement_id", reqId);
   if(error){ toast("Couldn't reopen that.", "orange"); return; }
   await logActivity(oppId, "Reopened for review: "+cfg.label, "");
@@ -500,8 +540,9 @@ async function ensureClientReqRows(stageId, clientId){
 }
 async function submitClientEvidence(clientId, reqId, text){
   const cfg = reqConfig(getClient(clientId).stageId, reqId);
+  const checks = (cfg.validationCriteria||[]).map(label=>({label, checked:false}));
   const {error} = await sb.from("client_requirement_status")
-    .update({status:"submitted", evidence:text, updated_at:new Date().toISOString()})
+    .update({status:"submitted", evidence:text, submitted_by:STATE.session.user.id, validation_checks:checks, updated_at:new Date().toISOString()})
     .eq("client_id", clientId).eq("requirement_id", reqId);
   if(error){ toast("Couldn't save that.", "orange"); return; }
   await logClientActivity(clientId, "Submitted evidence: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
@@ -509,13 +550,26 @@ async function submitClientEvidence(clientId, reqId, text){
   await refreshAndRerender();
 }
 async function verifyClientReq(clientId, reqId){
-  const cfg = reqConfig(getClient(clientId).stageId, reqId);
+  const c = getClient(clientId);
+  const cfg = reqConfig(c.stageId, reqId);
+  const guard = checkVerifyGuard(c, cfg, reqId);
+  if(guard){ toast(guard, "orange"); return; }
   const {error} = await sb.from("client_requirement_status")
     .update({status:"verified", verified_by:STATE.session.user.id, verified_at:new Date().toISOString(), updated_at:new Date().toISOString()})
     .eq("client_id", clientId).eq("requirement_id", reqId);
-  if(error){ toast("Couldn't verify that.", "orange"); return; }
+  if(error){ toast("Couldn't verify that — "+(error.message||"needs a second reviewer or an open checklist item"), "orange"); return; }
   await logClientActivity(clientId, "Verified: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
   toast("Verified.");
+  await refreshAndRerender();
+}
+async function toggleClientValidationCheck(clientId, reqId, idx){
+  const c = getClient(clientId);
+  const st = c.reqStatus[reqId] || {};
+  const checks = (st.validationChecks||[]).map((x,i)=> i===idx ? {...x, checked:!x.checked} : x);
+  const {error} = await sb.from("client_requirement_status")
+    .update({validation_checks:checks, updated_at:new Date().toISOString()})
+    .eq("client_id", clientId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't update that checklist item.", "orange"); return; }
   await refreshAndRerender();
 }
 async function flagClientReq(clientId, reqId, reason){
@@ -531,7 +585,7 @@ async function flagClientReq(clientId, reqId, reason){
 async function resolveClientReq(clientId, reqId){
   const cfg = reqConfig(getClient(clientId).stageId, reqId);
   const {error} = await sb.from("client_requirement_status")
-    .update({status:"pending", blocked_reason:null, updated_at:new Date().toISOString()})
+    .update({status:"pending", blocked_reason:null, verified_by:null, verified_at:null, submitted_by:null, validation_checks:[], updated_at:new Date().toISOString()})
     .eq("client_id", clientId).eq("requirement_id", reqId);
   if(error){ toast("Couldn't reopen that.", "orange"); return; }
   await logClientActivity(clientId, "Reopened for review: "+cfg.label, "");
@@ -579,8 +633,9 @@ async function ensureAccountReqRows(stageId, accountId){
 }
 async function submitAccountEvidence(accountId, reqId, text){
   const cfg = reqConfig(getAccount(accountId).stageId, reqId);
+  const checks = (cfg.validationCriteria||[]).map(label=>({label, checked:false}));
   const {error} = await sb.from("account_requirement_status")
-    .update({status:"submitted", evidence:text, updated_at:new Date().toISOString()})
+    .update({status:"submitted", evidence:text, submitted_by:STATE.session.user.id, validation_checks:checks, updated_at:new Date().toISOString()})
     .eq("account_id", accountId).eq("requirement_id", reqId);
   if(error){ toast("Couldn't save that.", "orange"); return; }
   await logAccountActivity(accountId, "Submitted evidence: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
@@ -588,13 +643,26 @@ async function submitAccountEvidence(accountId, reqId, text){
   await refreshAndRerender();
 }
 async function verifyAccountReq(accountId, reqId){
-  const cfg = reqConfig(getAccount(accountId).stageId, reqId);
+  const a = getAccount(accountId);
+  const cfg = reqConfig(a.stageId, reqId);
+  const guard = checkVerifyGuard(a, cfg, reqId);
+  if(guard){ toast(guard, "orange"); return; }
   const {error} = await sb.from("account_requirement_status")
     .update({status:"verified", verified_by:STATE.session.user.id, verified_at:new Date().toISOString(), updated_at:new Date().toISOString()})
     .eq("account_id", accountId).eq("requirement_id", reqId);
-  if(error){ toast("Couldn't verify that.", "orange"); return; }
+  if(error){ toast("Couldn't verify that — "+(error.message||"needs a second reviewer or an open checklist item"), "orange"); return; }
   await logAccountActivity(accountId, "Verified: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
   toast("Verified.");
+  await refreshAndRerender();
+}
+async function toggleAccountValidationCheck(accountId, reqId, idx){
+  const a = getAccount(accountId);
+  const st = a.reqStatus[reqId] || {};
+  const checks = (st.validationChecks||[]).map((x,i)=> i===idx ? {...x, checked:!x.checked} : x);
+  const {error} = await sb.from("account_requirement_status")
+    .update({validation_checks:checks, updated_at:new Date().toISOString()})
+    .eq("account_id", accountId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't update that checklist item.", "orange"); return; }
   await refreshAndRerender();
 }
 async function flagAccountReq(accountId, reqId, reason){
@@ -610,7 +678,7 @@ async function flagAccountReq(accountId, reqId, reason){
 async function resolveAccountReq(accountId, reqId){
   const cfg = reqConfig(getAccount(accountId).stageId, reqId);
   const {error} = await sb.from("account_requirement_status")
-    .update({status:"pending", blocked_reason:null, updated_at:new Date().toISOString()})
+    .update({status:"pending", blocked_reason:null, verified_by:null, verified_at:null, submitted_by:null, validation_checks:[], updated_at:new Date().toISOString()})
     .eq("account_id", accountId).eq("requirement_id", reqId);
   if(error){ toast("Couldn't reopen that.", "orange"); return; }
   await logAccountActivity(accountId, "Reopened for review: "+cfg.label, "");
@@ -666,8 +734,9 @@ async function ensureCampaignReqRows(stageId, campaignId){
 }
 async function submitCampaignEvidence(campaignId, reqId, text){
   const cfg = reqConfig(getCampaign(campaignId).stageId, reqId);
+  const checks = (cfg.validationCriteria||[]).map(label=>({label, checked:false}));
   const {error} = await sb.from("campaign_requirement_status")
-    .update({status:"submitted", evidence:text, updated_at:new Date().toISOString()})
+    .update({status:"submitted", evidence:text, submitted_by:STATE.session.user.id, validation_checks:checks, updated_at:new Date().toISOString()})
     .eq("campaign_id", campaignId).eq("requirement_id", reqId);
   if(error){ toast("Couldn't save that.", "orange"); return; }
   await logCampaignActivity(campaignId, "Submitted evidence: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
@@ -675,13 +744,26 @@ async function submitCampaignEvidence(campaignId, reqId, text){
   await refreshAndRerender();
 }
 async function verifyCampaignReq(campaignId, reqId){
-  const cfg = reqConfig(getCampaign(campaignId).stageId, reqId);
+  const c = getCampaign(campaignId);
+  const cfg = reqConfig(c.stageId, reqId);
+  const guard = checkVerifyGuard(c, cfg, reqId);
+  if(guard){ toast(guard, "orange"); return; }
   const {error} = await sb.from("campaign_requirement_status")
     .update({status:"verified", verified_by:STATE.session.user.id, verified_at:new Date().toISOString(), updated_at:new Date().toISOString()})
     .eq("campaign_id", campaignId).eq("requirement_id", reqId);
-  if(error){ toast("Couldn't verify that.", "orange"); return; }
+  if(error){ toast("Couldn't verify that — "+(error.message||"needs a second reviewer or an open checklist item"), "orange"); return; }
   await logCampaignActivity(campaignId, "Verified: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
   toast("Verified.");
+  await refreshAndRerender();
+}
+async function toggleCampaignValidationCheck(campaignId, reqId, idx){
+  const c = getCampaign(campaignId);
+  const st = c.reqStatus[reqId] || {};
+  const checks = (st.validationChecks||[]).map((x,i)=> i===idx ? {...x, checked:!x.checked} : x);
+  const {error} = await sb.from("campaign_requirement_status")
+    .update({validation_checks:checks, updated_at:new Date().toISOString()})
+    .eq("campaign_id", campaignId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't update that checklist item.", "orange"); return; }
   await refreshAndRerender();
 }
 async function flagCampaignReq(campaignId, reqId, reason){
@@ -697,7 +779,7 @@ async function flagCampaignReq(campaignId, reqId, reason){
 async function resolveCampaignReq(campaignId, reqId){
   const cfg = reqConfig(getCampaign(campaignId).stageId, reqId);
   const {error} = await sb.from("campaign_requirement_status")
-    .update({status:"pending", blocked_reason:null, updated_at:new Date().toISOString()})
+    .update({status:"pending", blocked_reason:null, verified_by:null, verified_at:null, submitted_by:null, validation_checks:[], updated_at:new Date().toISOString()})
     .eq("campaign_id", campaignId).eq("requirement_id", reqId);
   if(error){ toast("Couldn't reopen that.", "orange"); return; }
   await logCampaignActivity(campaignId, "Reopened for review: "+cfg.label, "");
@@ -758,8 +840,9 @@ async function ensureContentReqRows(stageId, contentId){
 }
 async function submitContentEvidence(contentId, reqId, text){
   const cfg = reqConfig(getContent(contentId).stageId, reqId);
+  const checks = (cfg.validationCriteria||[]).map(label=>({label, checked:false}));
   const {error} = await sb.from("content_requirement_status")
-    .update({status:"submitted", evidence:text, updated_at:new Date().toISOString()})
+    .update({status:"submitted", evidence:text, submitted_by:STATE.session.user.id, validation_checks:checks, updated_at:new Date().toISOString()})
     .eq("content_id", contentId).eq("requirement_id", reqId);
   if(error){ toast("Couldn't save that.", "orange"); return; }
   await logContentActivity(contentId, "Submitted evidence: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
@@ -767,13 +850,26 @@ async function submitContentEvidence(contentId, reqId, text){
   await refreshAndRerender();
 }
 async function verifyContentReq(contentId, reqId){
-  const cfg = reqConfig(getContent(contentId).stageId, reqId);
+  const c = getContent(contentId);
+  const cfg = reqConfig(c.stageId, reqId);
+  const guard = checkVerifyGuard(c, cfg, reqId);
+  if(guard){ toast(guard, "orange"); return; }
   const {error} = await sb.from("content_requirement_status")
     .update({status:"verified", verified_by:STATE.session.user.id, verified_at:new Date().toISOString(), updated_at:new Date().toISOString()})
     .eq("content_id", contentId).eq("requirement_id", reqId);
-  if(error){ toast("Couldn't verify that.", "orange"); return; }
+  if(error){ toast("Couldn't verify that — "+(error.message||"needs a second reviewer or an open checklist item"), "orange"); return; }
   await logContentActivity(contentId, "Verified: "+cfg.label, cfg.dims.map(d=>DIM_LABEL[d]).join(", "));
   toast("Verified.");
+  await refreshAndRerender();
+}
+async function toggleContentValidationCheck(contentId, reqId, idx){
+  const c = getContent(contentId);
+  const st = c.reqStatus[reqId] || {};
+  const checks = (st.validationChecks||[]).map((x,i)=> i===idx ? {...x, checked:!x.checked} : x);
+  const {error} = await sb.from("content_requirement_status")
+    .update({validation_checks:checks, updated_at:new Date().toISOString()})
+    .eq("content_id", contentId).eq("requirement_id", reqId);
+  if(error){ toast("Couldn't update that checklist item.", "orange"); return; }
   await refreshAndRerender();
 }
 async function flagContentReq(contentId, reqId, reason){
@@ -789,7 +885,7 @@ async function flagContentReq(contentId, reqId, reason){
 async function resolveContentReq(contentId, reqId){
   const cfg = reqConfig(getContent(contentId).stageId, reqId);
   const {error} = await sb.from("content_requirement_status")
-    .update({status:"pending", blocked_reason:null, updated_at:new Date().toISOString()})
+    .update({status:"pending", blocked_reason:null, verified_by:null, verified_at:null, submitted_by:null, validation_checks:[], updated_at:new Date().toISOString()})
     .eq("content_id", contentId).eq("requirement_id", reqId);
   if(error){ toast("Couldn't reopen that.", "orange"); return; }
   await logContentActivity(contentId, "Reopened for review: "+cfg.label, "");
@@ -1470,6 +1566,7 @@ function renderRecordDetail(id, type){
           <div class="check-item ${state.status==="verified"?"checked":""}" data-action="toggle-handoff" data-id="${o.id}" data-req="${cfg.id}" style="cursor:pointer">
             <span class="box">${state.status==="verified"?"✓":""}</span>
             <span class="txt">${esc(cfg.label)}${cfg.required?"":" (optional)"}</span>
+            ${cfg.artifactName ? `<button class="btn small ghost-blue" style="margin-left:auto" data-action="copy-prompt" data-prompt="${esc(fillPromptTemplate(cfg.aiPromptTemplate,o))}" title="Copy the recommended AI prompt for ${esc(cfg.artifactName)}">🤖 ${esc(cfg.artifactName).toUpperCase()}</button>` : ""}
           </div>`).join("")}
       </div>
       <button class="btn primary full" data-action="send-handoff" data-id="${o.id}" ${a.allRequiredVerified?"":"disabled"}>SEND TO FLOW →</button>
@@ -1561,17 +1658,48 @@ function renderRecordDetail(id, type){
       <div class="timeline">${timelineHtml}</div>
     </div>`;
 }
+function fillPromptTemplate(tmpl, o){
+  return String(tmpl||"")
+    .replace(/\{\{business\}\}/g, o.business||"")
+    .replace(/\{\{contact\}\}/g, o.contact||"")
+    .replace(/\{\{value\}\}/g, o.value ? money(o.value) : "")
+    .replace(/\{\{stage\}\}/g, stageName(o.stageId)||"");
+}
+function artifactBannerHtml(o,cfg){
+  if(!cfg.artifactName) return "";
+  const prompt = fillPromptTemplate(cfg.aiPromptTemplate, o);
+  return `<div class="artifact-banner">
+    <span class="artifact-tag">🤖 ARTIFACT — ${esc(cfg.artifactName)}</span>
+    ${prompt ? `<button class="btn small ghost-blue" data-action="copy-prompt" data-prompt="${esc(prompt)}">COPY AI PROMPT →</button>` : ""}
+  </div>`;
+}
 function reqItemHtml(o,cfg,state,type){
   const t = type||"opportunity";
   const stateCls = state.status==="blocked" ? "state-blocked" : state.status==="submitted" ? "state-submitted" : state.status==="verified" ? "state-verified" : "";
+  const hasRubric = (cfg.validationCriteria||[]).length>0;
   let body = "";
   if(state.status==="pending"){
-    body = `<textarea class="ev-input" placeholder="Log what happened — call notes, doc link, number…" data-role="evidence-input"></textarea>
+    body = `${artifactBannerHtml(o,cfg)}
+      <textarea class="ev-input" placeholder="Log what happened — call notes, doc link, number…" data-role="evidence-input"></textarea>
       <div class="req-actions"><button class="btn small primary" data-action="submit-evidence" data-type="${t}" data-id="${o.id}" data-req="${cfg.id}">SUBMIT EVIDENCE →</button></div>`;
   } else if(state.status==="submitted"){
-    body = `<div class="req-evidence">${esc(state.evidence||"")}</div>
+    const checks = state.validationChecks||[];
+    const allChecked = !hasRubric || (checks.length>0 && checks.every(c=>c.checked));
+    const isSelf = hasRubric && state.submittedBy && STATE.session && state.submittedBy===STATE.session.user.id;
+    const rubricHtml = hasRubric ? `<div class="validation-rubric">
+        <div class="rubric-label">VALIDATION CHECKLIST — every item must clear before this can be verified</div>
+        ${checks.map((c,i)=>`<div class="rubric-item ${c.checked?"checked":""}" data-action="toggle-check" data-type="${t}" data-id="${o.id}" data-req="${cfg.id}" data-idx="${i}" style="cursor:pointer">
+          <span class="box">${c.checked?"✓":""}</span><span class="txt">${esc(c.label)}</span>
+        </div>`).join("")}
+      </div>` : "";
+    const verifyDisabled = !allChecked || isSelf;
+    const verifyTitle = isSelf ? "Needs a second reviewer — you submitted this evidence yourself" : (!allChecked ? "Check off every rubric item first" : "");
+    body = `${artifactBannerHtml(o,cfg)}
+      <div class="req-evidence">${esc(state.evidence||"")}</div>
+      ${rubricHtml}
+      ${isSelf ? `<div class="req-meta" style="color:var(--amber)">⚑ AWAITING A SECOND REVIEWER — YOU SUBMITTED THIS EVIDENCE</div>` : ""}
       <div class="req-actions">
-        <button class="btn small ghost-blue" data-action="verify-req" data-type="${t}" data-id="${o.id}" data-req="${cfg.id}">✓ VERIFY</button>
+        <button class="btn small ghost-blue" data-action="verify-req" data-type="${t}" data-id="${o.id}" data-req="${cfg.id}" ${verifyDisabled?"disabled":""} title="${esc(verifyTitle)}">✓ VERIFY</button>
         <button class="btn small danger" data-action="show-flag" data-id="${o.id}" data-req="${cfg.id}">⚑ FLAG ISSUE</button>
       </div>
       <div class="flag-row" style="display:none" data-role="flag-row">
@@ -1583,7 +1711,8 @@ function reqItemHtml(o,cfg,state,type){
       <div class="req-meta">✓ VERIFIED BY ${esc((state.verifiedBy||"").toUpperCase())} · ${relTime(state.verifiedAt)}</div>
       <button class="reopen-link" data-action="reopen-req" data-type="${t}" data-id="${o.id}" data-req="${cfg.id}">reopen</button>`;
   } else if(state.status==="blocked"){
-    body = `<div class="req-evidence" style="border-left-color:var(--critical); color:var(--paper)">⚑ ${esc(state.blockedReason||"")}</div>
+    body = `${artifactBannerHtml(o,cfg)}
+      <div class="req-evidence" style="border-left-color:var(--critical); color:var(--paper)">⚑ ${esc(state.blockedReason||"")}</div>
       <div class="req-actions"><button class="btn small ghost-blue" data-action="resolve-req" data-type="${t}" data-id="${o.id}" data-req="${cfg.id}">MARK RESOLVED — BACK TO REVIEW</button></div>`;
   }
   return `<div class="req-item ${stateCls}">
@@ -1608,18 +1737,34 @@ function renderQuality(){
       rows.push({o,cfg,st,type});
     });
   });
-  document.getElementById("qualityView").innerHTML = rows.length ? rows.map(({o,cfg,st,type})=>`
+  document.getElementById("qualityView").innerHTML = rows.length ? rows.map(({o,cfg,st,type})=>{
+    const hasRubric = (cfg.validationCriteria||[]).length>0;
+    const checks = st.validationChecks||[];
+    const allChecked = !hasRubric || (checks.length>0 && checks.every(c=>c.checked));
+    const isSelf = hasRubric && st.submittedBy && STATE.session && st.submittedBy===STATE.session.user.id;
+    const verifyDisabled = !allChecked || isSelf;
+    const rubricHtml = hasRubric ? `<div class="validation-rubric">
+        <div class="rubric-label">VALIDATION CHECKLIST — every item must clear before this can be verified</div>
+        ${checks.map((c,i)=>`<div class="rubric-item ${c.checked?"checked":""}" data-action="toggle-check" data-type="${type}" data-id="${o.id}" data-req="${cfg.id}" data-idx="${i}" style="cursor:pointer">
+          <span class="box">${c.checked?"✓":""}</span><span class="txt">${esc(c.label)}</span>
+        </div>`).join("")}
+      </div>` : "";
+    return `
     <div class="q-row">
       <div class="q-main">
         <div class="att-top"><span class="att-biz">${esc(o.business)}</span>${dimTags(cfg.dims)}<span class="pill neutral">${stageName(o.stageId)}</span><span class="pill neutral">${WF_LABEL[type]||"SALES"}</span></div>
         <div class="q-req">${esc(cfg.label)}</div>
+        ${cfg.artifactName ? `<div class="artifact-tag" style="margin-top:6px; display:inline-block;">🤖 ARTIFACT — ${esc(cfg.artifactName)}</div>` : ""}
         <div class="req-evidence" style="margin-top:8px; max-width:60ch;">${esc(st.evidence||"")}</div>
+        ${rubricHtml}
+        ${isSelf ? `<div class="req-meta" style="color:var(--amber)">⚑ AWAITING A SECOND REVIEWER — YOU SUBMITTED THIS EVIDENCE</div>` : ""}
       </div>
       <div class="q-actions">
-        <button class="btn small ghost-blue" data-action="verify-req" data-type="${type}" data-id="${o.id}" data-req="${cfg.id}">✓ VERIFY</button>
+        <button class="btn small ghost-blue" data-action="verify-req" data-type="${type}" data-id="${o.id}" data-req="${cfg.id}" ${verifyDisabled?"disabled":""} title="${isSelf?"Needs a second reviewer":(!allChecked?"Check off every rubric item first":"")}">✓ VERIFY</button>
         <button class="btn small" data-action="open-deal" data-type="${type}" data-id="${o.id}">REVIEW IN DETAIL →</button>
       </div>
-    </div>`).join("") : `<div class="empty-state">QUEUE'S CLEAR. NOTHING WAITING ON VERIFICATION.</div>`;
+    </div>`;
+  }).join("") : `<div class="empty-state">QUEUE'S CLEAR. NOTHING WAITING ON VERIFICATION.</div>`;
 }
 
 /* ---------------------------------------------------------- */
@@ -1932,7 +2077,9 @@ function renderAdmin(){
   `;
 }
 function adminReqRow(stageId, r){
-  return `<div class="admin-req-row" data-stage="${stageId}" data-req="${r.id}">
+  const hasArtifact = !!r.artifactName;
+  return `<div class="admin-req-row-wrap">
+  <div class="admin-req-row" data-stage="${stageId}" data-req="${r.id}">
     <div class="admin-req-name">${esc(r.label)}<span class="sub">${esc(r.dept)} · gate at ${r.thresholdDays}d</span></div>
     <div class="dim-toggle-group">
       ${["process","quality","growth"].map(d=>`<button class="dim-toggle ${r.dims.includes(d)?"on "+d:""}" data-action="toggle-dim" data-req="${r.id}" data-dim="${d}">${DIM_LABEL[d].slice(0,4)}</button>`).join("")}
@@ -1941,8 +2088,55 @@ function adminReqRow(stageId, r){
       <input type="checkbox" ${r.required?"checked":""} data-action="toggle-required" data-req="${r.id}">
       <span class="track"><span class="thumb"></span></span>
     </label>
+    <button class="btn small ${hasArtifact?"ghost-blue":""}" data-action="toggle-artifact-editor" data-req="${r.id}">${hasArtifact?"🤖 ARTIFACT":"+ ARTIFACT"}</button>
     <button class="del" data-action="del-req" data-req="${r.id}" title="Remove requirement">×</button>
+  </div>
+  <div class="admin-artifact-editor hidden" data-editor-for="${r.id}">
+    <label>ARTIFACT NAME <span class="sub">what deliverable this gate actually produces — leave blank for a plain checklist gate</span></label>
+    <input class="artifact-name-input" data-req="${r.id}" value="${esc(r.artifactName||"")}" placeholder="e.g. Discovery Notes">
+    <label>RECOMMENDED AI PROMPT <span class="sub">tokens {{business}}, {{contact}}, {{value}}, {{stage}} are filled in automatically when someone copies it</span></label>
+    <textarea class="artifact-prompt-input" data-req="${r.id}" rows="4" placeholder="Draft a...">${esc(r.aiPromptTemplate||"")}</textarea>
+    <label>VALIDATION CHECKLIST <span class="sub">every item must be checked, by someone other than whoever submitted the evidence, before this gate can be verified</span></label>
+    <div class="criteria-list" data-req="${r.id}">
+      ${(r.validationCriteria||[]).map((c,i)=>`<div class="criteria-row"><input class="criterion-input" value="${esc(c)}" data-req="${r.id}" data-idx="${i}"><button class="del" data-action="del-criterion" data-req="${r.id}" data-idx="${i}">×</button></div>`).join("")}
+    </div>
+    <button class="btn small" data-action="add-criterion" data-req="${r.id}">+ ADD CHECK</button>
+    <div class="req-actions" style="margin-top:12px;">
+      <button class="btn small primary" data-action="save-artifact" data-req="${r.id}">SAVE ARTIFACT SETTINGS</button>
+      ${hasArtifact?`<button class="btn small danger" data-action="clear-artifact" data-req="${r.id}">REMOVE ARTIFACT</button>`:""}
+    </div>
+  </div>
   </div>`;
+}
+function openAddCriterionRow(btn){
+  const reqId = btn.dataset.req;
+  const list = document.querySelector(`.criteria-list[data-req="${CSS.escape(reqId)}"]`);
+  if(!list) return;
+  const idx = list.children.length;
+  const row = document.createElement("div");
+  row.className = "criteria-row";
+  row.innerHTML = `<input class="criterion-input" value="" data-req="${reqId}" data-idx="${idx}"><button class="del" data-action="del-criterion" data-req="${reqId}" data-idx="${idx}">×</button>`;
+  list.appendChild(row);
+  row.querySelector("input").focus();
+}
+async function saveArtifactSettings(reqId){
+  const wrap = document.querySelector(`.admin-artifact-editor[data-editor-for="${CSS.escape(reqId)}"]`);
+  if(!wrap) return;
+  const name = wrap.querySelector(".artifact-name-input").value.trim();
+  const prompt = wrap.querySelector(".artifact-prompt-input").value.trim();
+  const criteria = Array.from(wrap.querySelectorAll(".criterion-input")).map(i=>i.value.trim()).filter(Boolean);
+  const {error} = await sb.from("requirements").update({
+    artifact_name: name || null, ai_prompt_template: prompt || null, validation_criteria: criteria
+  }).eq("id", reqId);
+  if(error){ toast("Couldn't save artifact settings — admin only.", "orange"); return; }
+  toast("Artifact settings saved.");
+  await refreshAndRerender();
+}
+async function clearArtifactSettings(reqId){
+  const {error} = await sb.from("requirements").update({artifact_name:null, ai_prompt_template:null, validation_criteria:[]}).eq("id", reqId);
+  if(error){ toast("Couldn't clear that — admin only.", "orange"); return; }
+  toast("Artifact removed from this gate.", "orange");
+  await refreshAndRerender();
 }
 
 /* ---------------------------------------------------------- */
@@ -2183,11 +2377,11 @@ function wireEvents(){
 
     const recType = t.dataset.type || "opportunity";
     const RECORD_HANDLERS = {
-      opportunity: {submitEvidence, verifyReq, flagReq, resolveReq, advance:advanceStage},
-      client:      {submitEvidence:submitClientEvidence, verifyReq:verifyClientReq, flagReq:flagClientReq, resolveReq:resolveClientReq, advance:advanceClientStage},
-      account:     {submitEvidence:submitAccountEvidence, verifyReq:verifyAccountReq, flagReq:flagAccountReq, resolveReq:resolveAccountReq, advance:advanceAccountStage},
-      campaign:    {submitEvidence:submitCampaignEvidence, verifyReq:verifyCampaignReq, flagReq:flagCampaignReq, resolveReq:resolveCampaignReq, advance:advanceCampaignStage},
-      content:     {submitEvidence:submitContentEvidence, verifyReq:verifyContentReq, flagReq:flagContentReq, resolveReq:resolveContentReq, advance:advanceContentStage}
+      opportunity: {submitEvidence, verifyReq, flagReq, resolveReq, advance:advanceStage, toggleCheck:toggleValidationCheck},
+      client:      {submitEvidence:submitClientEvidence, verifyReq:verifyClientReq, flagReq:flagClientReq, resolveReq:resolveClientReq, advance:advanceClientStage, toggleCheck:toggleClientValidationCheck},
+      account:     {submitEvidence:submitAccountEvidence, verifyReq:verifyAccountReq, flagReq:flagAccountReq, resolveReq:resolveAccountReq, advance:advanceAccountStage, toggleCheck:toggleAccountValidationCheck},
+      campaign:    {submitEvidence:submitCampaignEvidence, verifyReq:verifyCampaignReq, flagReq:flagCampaignReq, resolveReq:resolveCampaignReq, advance:advanceCampaignStage, toggleCheck:toggleCampaignValidationCheck},
+      content:     {submitEvidence:submitContentEvidence, verifyReq:verifyContentReq, flagReq:flagContentReq, resolveReq:resolveContentReq, advance:advanceContentStage, toggleCheck:toggleContentValidationCheck}
     };
     const H = RECORD_HANDLERS[recType] || RECORD_HANDLERS.opportunity;
 
@@ -2264,6 +2458,13 @@ function wireEvents(){
       return;
     }
     if(action==="resolve-req" || action==="reopen-req"){ await H.resolveReq(t.dataset.id, t.dataset.req); return; }
+    if(action==="toggle-check"){ await H.toggleCheck(t.dataset.id, t.dataset.req, Number(t.dataset.idx)); return; }
+    if(action==="copy-prompt"){
+      const text = t.dataset.prompt || "";
+      try{ await navigator.clipboard.writeText(text); toast("Prompt copied — paste it into Claude."); }
+      catch(err){ toast("Couldn't copy automatically — select and copy the prompt manually.", "orange"); }
+      return;
+    }
 
     if(action==="advance"){ await H.advance(t.dataset.id); return; }
     if(action==="mark-live"){ await markClientLive(t.dataset.id); return; }
@@ -2285,6 +2486,15 @@ function wireEvents(){
     }
     if(action==="del-req"){ await deleteRequirement(t.dataset.req); return; }
     if(action==="toggle-dim"){ await toggleDim(t.dataset.req, t.dataset.dim); return; }
+    if(action==="toggle-artifact-editor"){
+      const editor = document.querySelector(`.admin-artifact-editor[data-editor-for="${CSS.escape(t.dataset.req)}"]`);
+      if(editor) editor.classList.toggle("hidden");
+      return;
+    }
+    if(action==="add-criterion"){ openAddCriterionRow(t); return; }
+    if(action==="del-criterion"){ t.closest(".criteria-row").remove(); return; }
+    if(action==="save-artifact"){ await saveArtifactSettings(t.dataset.req); return; }
+    if(action==="clear-artifact"){ await clearArtifactSettings(t.dataset.req); return; }
     if(action==="save-automation-threshold"){
       const input = document.getElementById("threshold-"+t.dataset.key);
       const val = Math.max(0, Number(input.value)||0);
